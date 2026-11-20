@@ -5,6 +5,7 @@ import json
 import time
 import threading
 import webbrowser
+from urllib.parse import quote
 import requests
 from bs4 import BeautifulSoup
 from PIL import Image as PILImage
@@ -19,15 +20,22 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FIREBASE_URL = os.environ.get("FIREBASE_URL", "").strip().rstrip("/")
 ADMIN_PIN = os.environ.get("ADMIN_PIN", "1234").strip()
 
-# 若尚未設定 Firebase，暫存於記憶體
-LOCAL_STATE = {
-    "products": [],
-    "rates": {"KRW": 0.0235, "JPY": 0.215, "CNY": 4.50, "USD": 32.5, "AUD": 21.2, "TWD": 1},
-    "feeChecked": False,
-    "shipping": 0,
-    "locked": False,
-    "updatedAt": 0
-}
+LOCAL_ROOMS = {}
+
+def default_room_state():
+    return {
+        "products": [],
+        "rates": {"KRW": 0.0235, "JPY": 0.215, "CNY": 4.50, "USD": 32.5, "AUD": 21.2, "TWD": 1},
+        "feeChecked": False,
+        "shipping": 0,
+        "locked": False,
+        "updatedAt": 0
+    }
+
+def sanitize_room(room_name):
+    name = (room_name or "大廳").strip()
+    safe = re.sub(r'[.$#\[\]/]', '_', name)
+    return safe[:30] if safe else "大廳"
 
 HTML_TEMPLATE = r"""
 <!DOCTYPE html>
@@ -55,7 +63,7 @@ HTML_TEMPLATE = r"""
       justify-content: space-between;
       align-items: center;
       gap: 10px;
-      margin-bottom: 14px;
+      margin-bottom: 12px;
     }
     .header-title {
       display: inline-block;
@@ -82,13 +90,51 @@ HTML_TEMPLATE = r"""
       font-weight: 700;
     }
     .user-bar input {
-      width: 86px;
+      width: 82px;
       padding: 4px 8px;
       border: 1px solid #ffb3c6;
       border-radius: 10px;
       font-weight: 700;
       color: #5c4742;
       text-align: center;
+    }
+    .room-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: blur(8px);
+      padding: 10px 16px;
+      border-radius: 18px;
+      border: 2px solid #ffb3c6;
+      margin-bottom: 14px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .room-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .room-controls input {
+      width: 130px;
+      padding: 5px 10px;
+      border: 2px solid #ffe5ec;
+      border-radius: 12px;
+      font-weight: 700;
+      color: #5c4742;
+      outline: none;
+    }
+    .room-controls input:focus { border-color: #ff8fab; }
+    .online-box {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #e8f8f5;
+      color: #1b7a68;
+      padding: 5px 12px;
+      border-radius: 50px;
+      border: 1px solid #a3e4d7;
+      font-size: 12px;
+      font-weight: 800;
     }
     .lock-banner {
       background: #ffccd5;
@@ -140,6 +186,7 @@ HTML_TEMPLATE = r"""
     }
     button:hover { background: #fb6f92; transform: translateY(-1px); }
     button:disabled { background: #ccc; box-shadow: none; cursor: not-allowed; transform: none; }
+    .btn-sm { padding: 6px 12px; font-size: 12px; }
     .btn-add { background: #8ecae6; box-shadow: 0 3px 8px rgba(142, 202, 230, 0.4); }
     .btn-add:hover { background: #219ebc; }
     .btn-line { background: #06c755; box-shadow: 0 3px 8px rgba(6, 199, 85, 0.35); }
@@ -251,14 +298,24 @@ HTML_TEMPLATE = r"""
     .btn-img:hover { background: #ffb3c6; color: #fff; }
     .title-input { width: 100%; min-width: 150px; padding: 4px 6px; border: 1px solid transparent; border-radius: 8px; font-size: 13px; background: transparent; color: #5c4742; font-weight: 600; }
     .title-input:hover, .title-input:focus { border-color: #ffb3c6; background: #fff; outline: none; }
+    .spec-stack { display: flex; flex-direction: column; gap: 5px; }
     .spec-input, .spec-select {
-      width: 135px;
+      width: 145px;
       padding: 5px 6px;
       border: 1px solid #ffb3c6;
       border-radius: 8px;
       font-size: 12px;
       color: #5c4742;
       background: #fff;
+    }
+    .note-input {
+      width: 145px;
+      padding: 4px 6px;
+      border: 1px dashed #ffb3c6;
+      border-radius: 8px;
+      font-size: 12px;
+      color: #5c4742;
+      background: #fff8fa;
     }
     .buyer-input { width: 68px; padding: 5px; border: 1px solid #ffb3c6; border-radius: 8px; font-size: 12px; color: #5c4742; font-weight: 700; text-align: center; background: #fff0f3; }
     .curr-select { padding: 4px 5px; border: 1px solid #ffb3c6; border-radius: 8px; font-size: 12px; font-weight: bold; background: #fff; color: #5c4742; }
@@ -283,6 +340,16 @@ HTML_TEMPLATE = r"""
         <button id="adminBtn" class="btn-admin" onclick="toggleAdminLogin()">👑 團主管理</button>
         <button id="lockToggleBtn" style="display:none;" onclick="toggleLock()"></button>
       </div>
+    </div>
+
+    <div class="room-bar">
+      <div class="room-controls">
+        <span>🚪 目前房間：</span>
+        <input type="text" id="roomInput" placeholder="輸入房名">
+        <button class="btn-sm btn-add" onclick="switchRoom()">切換 / 開新房</button>
+        <button class="btn-sm btn-rate" onclick="copyRoomLink()">🔗 複製此房間連結</button>
+      </div>
+      <div class="online-box" id="onlineBox">🟢 目前在線：讀取中...</div>
     </div>
 
     <div id="lockBanner" class="lock-banner">
@@ -340,7 +407,7 @@ HTML_TEMPLATE = r"""
             <th style="width: 32px;"><input type="checkbox" class="edit-only" id="selectAll" checked onchange="toggleAll(this)"></th>
             <th style="width: 82px; text-align:center;">商品照</th>
             <th>商品名稱</th>
-            <th style="width: 145px;">規格（顏色/尺寸/庫存）</th>
+            <th style="width: 155px;">規格 / 顏色備註</th>
             <th style="width: 76px; text-align:center;">買家</th>
             <th style="width: 76px;">幣別</th>
             <th style="width: 90px;">原幣單價</th>
@@ -365,9 +432,19 @@ HTML_TEMPLATE = r"""
     let isEditingNow = false;
     const CURRENCIES = ["KRW", "JPY", "CNY", "USD", "AUD", "TWD"];
 
+    let clientId = sessionStorage.getItem("chiikawa_cid");
+    if (!clientId) {
+      clientId = "u_" + Math.random().toString(36).slice(2, 10);
+      sessionStorage.setItem("chiikawa_cid", clientId);
+    }
+
+    const urlParams = new URLSearchParams(window.location.search);
+    let currentRoom = (urlParams.get("room") || "大廳").trim();
+
     window.addEventListener("DOMContentLoaded", async () => {
-      const savedName = localStorage.getItem("chiikawa_my_name") || "我";
+      const savedName = localStorage.getItem("chiikawa_my_name") || "訪客";
       document.getElementById("myNameInput").value = savedName;
+      document.getElementById("roomInput").value = currentRoom;
       await pullState(true);
       setInterval(() => {
         if (!isEditingNow) pullState(false);
@@ -375,11 +452,27 @@ HTML_TEMPLATE = r"""
     });
 
     function saveMyName() {
-      localStorage.setItem("chiikawa_my_name", document.getElementById("myNameInput").value.trim() || "我");
+      localStorage.setItem("chiikawa_my_name", document.getElementById("myNameInput").value.trim() || "訪客");
     }
 
     function getMyName() {
-      return document.getElementById("myNameInput").value.trim() || "我";
+      return document.getElementById("myNameInput").value.trim() || "訪客";
+    }
+
+    function switchRoom() {
+      const newRoom = document.getElementById("roomInput").value.trim() || "大廳";
+      const nextUrl = `${window.location.pathname}?room=${encodeURIComponent(newRoom)}`;
+      window.location.href = nextUrl;
+    }
+
+    function copyRoomLink() {
+      const roomName = document.getElementById("roomInput").value.trim() || currentRoom;
+      const shareUrl = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(roomName)}`;
+      navigator.clipboard.writeText(shareUrl).then(() => {
+        document.getElementById("statusText").innerText = `🔗 已複製「${roomName}」房間連結！快傳給朋友吧`;
+      }).catch(() => {
+        prompt("請手動複製此房間連結：", shareUrl);
+      });
     }
 
     function canEdit() {
@@ -443,11 +536,20 @@ HTML_TEMPLATE = r"""
 
     async function pullState(force = false) {
       try {
-        const res = await fetch("/api/state");
+        const qs = new URLSearchParams({
+          room: currentRoom,
+          cid: clientId,
+          name: getMyName()
+        });
+        const res = await fetch(`/api/state?${qs.toString()}`);
         const data = await res.json();
         const badge = document.getElementById("syncBadge");
-        badge.innerText = data.cloud ? "☁️ 雲端多人同步中" : "⚠️ 單機暫存（未設Firebase）";
+        badge.innerText = data.cloud ? "☁️ 雲端同步中" : "⚠️ 單機暫存";
         badge.style.color = data.cloud ? "#2a9d8f" : "#e76f51";
+
+        const online = data.online || [];
+        const onlineBox = document.getElementById("onlineBox");
+        onlineBox.innerText = `🟢 目前在線 (${online.length})：${online.join("、") || getMyName()}`;
 
         const st = data.state;
         if (!st) return;
@@ -474,6 +576,7 @@ HTML_TEMPLATE = r"""
     async function pushState() {
       if (!canEdit()) return;
       const payload = {
+        room: currentRoom,
         products: products,
         rates: getRates(),
         feeChecked: document.getElementById("feeCheck").checked,
@@ -575,13 +678,13 @@ HTML_TEMPLATE = r"""
           if (data.items && data.items.length > 0) {
             const it = data.items[0];
             const defaultSpec = (it.options && it.options.length > 0) ? it.options[0].label : "";
-            products.push({ ...it, spec: defaultSpec, buyer: myName, qty: 1, checked: true });
+            products.push({ ...it, spec: defaultSpec, note: "", buyer: myName, qty: 1, checked: true });
             added++;
             renderTable();
             await pushState();
           }
         } catch {
-          products.push({ url: url, title: "抓取逾時或受阻，請手動補填", img: "", price: 0, currency: "TWD", options: [], spec: "", buyer: myName, qty: 1, checked: true });
+          products.push({ url: url, title: "抓取逾時或受阻，請手動補填", img: "", price: 0, currency: "TWD", options: [], spec: "", note: "", buyer: myName, qty: 1, checked: true });
           added++;
           renderTable();
           await pushState();
@@ -597,7 +700,7 @@ HTML_TEMPLATE = r"""
 
     async function addManualRow() {
       if (!canEdit()) return;
-      products.push({ url: "", title: "手動新增商品", img: "", price: 0, currency: "TWD", options: [], spec: "", buyer: getMyName(), qty: 1, checked: true });
+      products.push({ url: "", title: "手動新增商品", img: "", price: 0, currency: "TWD", options: [], spec: "", note: "", buyer: getMyName(), qty: 1, checked: true });
       renderTable();
       await pushState();
     }
@@ -621,17 +724,21 @@ HTML_TEMPLATE = r"""
 
     async function clearAll() {
       if (!canEdit() || products.length === 0) return;
-      if (confirm("確定要清空所有人的商品清單嗎？")) {
+      if (confirm(`確定要清空「${currentRoom}」房間的所有商品嗎？`)) {
         products = [];
         document.getElementById("shippingInput").value = 0;
         renderTable();
         await pushState();
-        document.getElementById("statusText").innerText = "已清空清單";
+        document.getElementById("statusText").innerText = "已清空此房間清單";
       }
     }
 
     function escapeHtml(str) {
       return String(str || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    function formatFullSpec(p) {
+      return [p.spec || "", p.note || ""].map(s => s.trim()).filter(Boolean).join(" / ");
     }
 
     function renderSpecCell(p, idx, disabledAttr) {
@@ -641,9 +748,14 @@ HTML_TEMPLATE = r"""
           const selected = p.spec === o.label ? "selected" : "";
           return `<option value="${escapeHtml(o.label)}" ${selected}>${escapeHtml(o.label)} (${tag})</option>`;
         }).join("");
-        return `<select class="spec-select" id="spec-${idx}" ${disabledAttr} onchange="syncAndPush(${idx})">${optsHtml}</select>`;
+        return `
+          <div class="spec-stack">
+            <select class="spec-select" id="spec-${idx}" ${disabledAttr} onchange="syncAndPush(${idx})">${optsHtml}</select>
+            <input type="text" class="note-input" id="note-${idx}" placeholder="顏色 / 備註" value="${escapeHtml(p.note || '')}" ${disabledAttr} onfocus="isEditingNow=true" onblur="isEditingNow=false;syncAndPush(${idx})">
+          </div>
+        `;
       }
-      return `<input type="text" class="spec-input" id="spec-${idx}" placeholder="顏色 / 尺寸" value="${escapeHtml(p.spec || '')}" ${disabledAttr} onfocus="isEditingNow=true" onblur="isEditingNow=false;syncAndPush(${idx})">`;
+      return `<input type="text" class="spec-input" id="spec-${idx}" placeholder="顏色 / 尺寸 / 備註" value="${escapeHtml(p.spec || '')}" ${disabledAttr} onfocus="isEditingNow=true" onblur="isEditingNow=false;syncAndPush(${idx})">`;
     }
 
     function renderTable() {
@@ -652,7 +764,7 @@ HTML_TEMPLATE = r"""
       const dis = editable ? "" : "disabled";
 
       if (products.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; color:#999; padding:36px;">目前清單是空的，輸入你的名字後貼上網址就能一起買啦 🛒</td></tr>';
+        tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; color:#999; padding:36px;">「${escapeHtml(currentRoom)}」目前是空的，輸入名字後貼上網址就能一起買啦 🛒</td></tr>`;
         recalculate();
         return;
       }
@@ -671,7 +783,7 @@ HTML_TEMPLATE = r"""
             ${p.url ? `<a class="link-sm" href="${p.url}" target="_blank">開啟原網頁 ↗</a>` : ''}
           </td>
           <td>${renderSpecCell(p, idx, dis)}</td>
-          <td><input type="text" class="buyer-input" id="buyer-${idx}" value="${escapeHtml(p.buyer || '我')}" ${dis} onfocus="isEditingNow=true" onblur="isEditingNow=false;syncAndPush(${idx})"></td>
+          <td><input type="text" class="buyer-input" id="buyer-${idx}" value="${escapeHtml(p.buyer || '訪客')}" ${dis} onfocus="isEditingNow=true" onblur="isEditingNow=false;syncAndPush(${idx})"></td>
           <td>
             <select class="curr-select" id="curr-${idx}" ${dis} onchange="syncAndPush(${idx})">
               ${CURRENCIES.map(c => `<option value="${c}" ${p.currency === c ? 'selected' : ''}>${c}</option>`).join("")}
@@ -694,7 +806,9 @@ HTML_TEMPLATE = r"""
       products[idx].checked = cb.checked;
       products[idx].title = document.getElementById(`title-${idx}`).value;
       products[idx].spec = document.getElementById(`spec-${idx}`).value;
-      products[idx].buyer = document.getElementById(`buyer-${idx}`).value.trim() || "我";
+      const noteEl = document.getElementById(`note-${idx}`);
+      products[idx].note = noteEl ? noteEl.value : "";
+      products[idx].buyer = document.getElementById(`buyer-${idx}`).value.trim() || "訪客";
       products[idx].currency = document.getElementById(`curr-${idx}`).value;
       products[idx].price = parseFloat(document.getElementById(`price-${idx}`).value) || 0;
       products[idx].qty = parseInt(document.getElementById(`qty-${idx}`).value) || 1;
@@ -726,14 +840,14 @@ HTML_TEMPLATE = r"""
 
         if (p.checked !== false) {
           const qty = p.qty || 1;
-          const buyer = p.buyer || "我";
+          const buyer = p.buyer || "訪客";
           totalQty += qty;
           totalGoodsTwd += unitTwd * qty;
 
           if (!buyers[buyer]) buyers[buyer] = { qty: 0, goodsTwd: 0, items: [] };
           buyers[buyer].qty += qty;
           buyers[buyer].goodsTwd += unitTwd * qty;
-          buyers[buyer].items.push({ title: p.title, spec: p.spec || "", qty, unitTwd, subTwd: unitTwd * qty });
+          buyers[buyer].items.push({ title: p.title, fullSpec: formatFullSpec(p), qty, unitTwd, subTwd: unitTwd * qty });
         }
       });
 
@@ -772,7 +886,7 @@ HTML_TEMPLATE = r"""
       const { totalQty, totalTwd, shipping, feeChecked, buyers } = getBreakdown();
       if (totalQty === 0) return alert("請至少勾選一件商品！");
 
-      let lines = ["🛍️ 跨國團購結帳清單"];
+      let lines = [`🛍️ 跨國團購結帳清單【${currentRoom}】`];
       if (feeChecked || shipping > 0) {
         let notes = [];
         if (feeChecked) notes.push("含1.5%刷卡費");
@@ -784,7 +898,7 @@ HTML_TEMPLATE = r"""
       for (const [name, info] of Object.entries(buyers)) {
         lines.push(`👤 ${name}（${info.qty}件）`);
         info.items.forEach(it => {
-          const specStr = it.spec ? ` [${it.spec}]` : "";
+          const specStr = it.fullSpec ? ` [${it.fullSpec}]` : "";
           lines.push(`• ${it.title}${specStr} x${it.qty} — NT$${it.subTwd.toLocaleString()}`);
         });
         if (info.shippingShare > 0) {
@@ -805,7 +919,10 @@ HTML_TEMPLATE = r"""
     }
 
     async function exportExcel() {
-      const selectedItems = products.filter(p => p.checked !== false);
+      const selectedItems = products.filter(p => p.checked !== false).map(p => ({
+        ...p,
+        fullSpec: formatFullSpec(p)
+      }));
       if (selectedItems.length === 0) return alert("請至少勾選一件商品再匯出！");
 
       const btn = document.getElementById("exportBtn");
@@ -819,6 +936,7 @@ HTML_TEMPLATE = r"""
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            room: currentRoom,
             items: selectedItems,
             rates: getRates(),
             feeChecked: document.getElementById("feeCheck").checked,
@@ -831,7 +949,7 @@ HTML_TEMPLATE = r"""
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = "group_shopping_list.xlsx";
+        a.download = `shopping_${currentRoom}.xlsx`;
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -857,25 +975,47 @@ HEADERS = {
 
 SUPPORTED_CURRENCIES = {"KRW", "JPY", "CNY", "USD", "AUD", "TWD"}
 
-def load_cloud_state():
+def get_room_bundle(room_id):
     if not FIREBASE_URL:
-        return LOCAL_STATE
+        if room_id not in LOCAL_ROOMS:
+            LOCAL_ROOMS[room_id] = {"state": default_room_state(), "presence": {}}
+        return LOCAL_ROOMS[room_id]
     try:
-        res = requests.get(f"{FIREBASE_URL}/shop_state.json", timeout=6)
+        res = requests.get(f"{FIREBASE_URL}/rooms/{quote(room_id)}.json", timeout=6)
         data = res.json()
         if isinstance(data, dict):
-            return data
+            return {
+                "state": data.get("state") or default_room_state(),
+                "presence": data.get("presence") or {}
+            }
     except Exception:
         pass
-    return LOCAL_STATE
+    return {"state": default_room_state(), "presence": {}}
 
-def save_cloud_state(state):
-    global LOCAL_STATE
-    LOCAL_STATE = state
+def update_presence(room_id, cid, name):
+    now = int(time.time())
     if not FIREBASE_URL:
+        if room_id not in LOCAL_ROOMS:
+            LOCAL_ROOMS[room_id] = {"state": default_room_state(), "presence": {}}
+        LOCAL_ROOMS[room_id]["presence"][cid] = {"name": name, "ts": now}
+        return
+    try:
+        requests.patch(
+            f"{FIREBASE_URL}/rooms/{quote(room_id)}/presence.json",
+            json={cid: {"name": name, "ts": now}},
+            timeout=5
+        )
+    except Exception:
+        pass
+
+def save_room_state(room_id, state):
+    if not FIREBASE_URL:
+        if room_id not in LOCAL_ROOMS:
+            LOCAL_ROOMS[room_id] = {"state": default_room_state(), "presence": {}}
+        LOCAL_ROOMS[room_id]["state"] = state
         return True
     try:
-        res = requests.put(f"{FIREBASE_URL}/shop_state.json", json=state, timeout=6)
+        res = requests.put(f"{FIREBASE_URL}/rooms/{quote(room_id)}/state.json", json=state, timeout=6)
         return res.ok
     except Exception:
         return False
@@ -895,10 +1035,29 @@ def api_verify_admin():
 @app.route("/api/state", methods=["GET", "POST"])
 def api_state():
     if request.method == "GET":
-        return jsonify({"cloud": bool(FIREBASE_URL), "state": load_cloud_state()})
+        room_id = sanitize_room(request.args.get("room", "大廳"))
+        cid = request.args.get("cid", "").strip()
+        name = (request.args.get("name", "訪客").strip() or "訪客")[:15]
 
-    current = load_cloud_state()
+        if cid:
+            update_presence(room_id, cid, name)
+
+        bundle = get_room_bundle(room_id)
+        now = int(time.time())
+        online_names = []
+        for _, info in (bundle.get("presence") or {}).items():
+            if isinstance(info, dict) and now - info.get("ts", 0) <= 18:
+                online_names.append(info.get("name", "訪客"))
+
+        return jsonify({
+            "cloud": bool(FIREBASE_URL),
+            "state": bundle["state"],
+            "online": online_names
+        })
+
     data = request.json or {}
+    room_id = sanitize_room(data.get("room", "大廳"))
+    current = get_room_bundle(room_id)["state"]
     req_pin = str(data.get("adminPin", "")).strip()
     is_admin = (req_pin == ADMIN_PIN)
 
@@ -914,7 +1073,7 @@ def api_state():
         "locked": new_locked,
         "updatedAt": int(time.time() * 1000)
     }
-    save_cloud_state(new_state)
+    save_room_state(room_id, new_state)
     return jsonify({"ok": True, "updatedAt": new_state["updatedAt"]})
 
 @app.route("/api/rates")
@@ -987,10 +1146,7 @@ def parse_json_ld(soup):
     return "", "", 0, ""
 
 def parse_options_and_stock(url, html_text, soup):
-    """嘗試抓取 LMC (Cafe24) 與 Shopify 的顏色/尺寸選項與庫存"""
     options = []
-
-    # 1. Cafe24 專屬 option_stock_data 解析 (LMC 等韓牌)
     m = re.search(r"option_stock_data\s*=\s*'(\{.*?\})'", html_text)
     if not m:
         m = re.search(r'option_stock_data\s*=\s*"(\{.*?\})"', html_text)
@@ -1018,7 +1174,6 @@ def parse_options_and_stock(url, html_text, soup):
         except Exception:
             pass
 
-    # 2. Shopify 官網解析 (/products/xxx -> .json)
     if "/products/" in url:
         try:
             base = url.split("?")[0].rstrip("/")
@@ -1035,7 +1190,6 @@ def parse_options_and_stock(url, html_text, soup):
         except Exception:
             pass
 
-    # 3. 備用：解析網頁上的 <select> 規格選單
     for sel in soup.select("select[id*='product_option'], select[name*='option']"):
         for opt in sel.find_all("option"):
             val = opt.get("value", "").strip()
@@ -1136,6 +1290,7 @@ def api_fetch():
 @app.route("/api/export", methods=["POST"])
 def api_export():
     data = request.json
+    room_name = sanitize_room(data.get("room", "大廳"))
     items = data.get("items", [])
     rates = data.get("rates", {})
     fee_mult = 1.015 if data.get("feeChecked") else 1.0
@@ -1146,9 +1301,9 @@ def api_export():
 
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "跨國團購清單"
+    ws.title = room_name[:28]
 
-    col_headers = ["商品照", "買家", "商品名稱", "規格", "幣別", "原幣單價", "台幣單價", "數量", "運費分攤", "小計 (TWD)", "商品連結"]
+    col_headers = ["商品照", "買家", "商品名稱", "規格 / 顏色備註", "幣別", "原幣單價", "台幣單價", "數量", "運費分攤", "小計 (TWD)", "商品連結"]
     ws.append(col_headers)
 
     header_fill = PatternFill(start_color="5C4742", end_color="5C4742", fill_type="solid")
@@ -1160,7 +1315,7 @@ def api_export():
         cell.alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[1].height = 28
 
-    col_widths = {"A": 15, "B": 10, "C": 32, "D": 16, "E": 7, "F": 11, "G": 11, "H": 7, "I": 10, "J": 12, "K": 30}
+    col_widths = {"A": 15, "B": 10, "C": 32, "D": 20, "E": 7, "F": 11, "G": 11, "H": 7, "I": 10, "J": 12, "K": 30}
     for col, width in col_widths.items():
         ws.column_dimensions[col].width = width
 
@@ -1179,9 +1334,10 @@ def api_export():
 
         ws.row_dimensions[row_idx].height = 78
 
-        ws.cell(row=row_idx, column=2, value=item.get("buyer", "我")).alignment = Alignment(horizontal="center", vertical="center")
+        spec_text = item.get("fullSpec") or item.get("spec", "")
+        ws.cell(row=row_idx, column=2, value=item.get("buyer", "訪客")).alignment = Alignment(horizontal="center", vertical="center")
         ws.cell(row=row_idx, column=3, value=item.get("title", "")).alignment = Alignment(vertical="center", wrap_text=True)
-        ws.cell(row=row_idx, column=4, value=item.get("spec", "")).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        ws.cell(row=row_idx, column=4, value=spec_text).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         ws.cell(row=row_idx, column=5, value=curr).alignment = Alignment(horizontal="center", vertical="center")
 
         for col_i, val, fmt in [
@@ -1241,7 +1397,7 @@ def api_export():
     return send_file(
         output,
         as_attachment=True,
-        download_name="group_shopping_list.xlsx",
+        download_name=f"shopping_{room_name}.xlsx",
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
