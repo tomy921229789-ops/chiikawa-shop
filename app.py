@@ -28,6 +28,10 @@ def default_room_state():
         "rates": {"KRW": 0.0235, "JPY": 0.215, "CNY": 4.50, "USD": 32.5, "AUD": 21.2, "TWD": 1},
         "feeChecked": False,
         "shipping": 0,
+        "shippingMode": "qty",       # "qty" 依件數均分 / "amount" 依金額比例
+        "freeShipThreshold": 0,      # 免運門檻 (TWD)
+        "bankInfo": "",              # 團主匯款資訊
+        "paidBuyers": {},            # {"小明": True}
         "locked": False,
         "allowedEditors": [],
         "roomPassword": "",
@@ -58,7 +62,7 @@ HTML_TEMPLATE = r"""
       background-attachment: fixed;
       min-height: 100vh;
     }
-    .container { max-width: 1280px; margin: 0 auto; }
+    .container { max-width: 1300px; margin: 0 auto; }
     .top-bar {
       display: flex;
       flex-wrap: wrap;
@@ -153,8 +157,8 @@ HTML_TEMPLATE = r"""
       display: flex;
       flex-wrap: wrap;
       align-items: center;
-      gap: 10px;
-      margin-top: 8px;
+      gap: 8px;
+      margin-top: 9px;
     }
     .admin-panel input {
       padding: 5px 10px;
@@ -164,6 +168,32 @@ HTML_TEMPLATE = r"""
       color: #5c4742;
       font-weight: 700;
     }
+    .rooms-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .room-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(255, 255, 255, 0.15);
+      border: 1px solid #ffd166;
+      color: #fff;
+      padding: 3px 10px;
+      border-radius: 50px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .room-chip:hover { background: rgba(255, 209, 102, 0.3); }
+    .room-chip-del {
+      color: #ff8fab;
+      font-weight: 900;
+      margin-left: 2px;
+      padding: 0 3px;
+    }
+    .room-chip-del:hover { color: #ff4d6d; }
     .lock-banner {
       background: #ffccd5;
       color: #800f2f;
@@ -188,7 +218,7 @@ HTML_TEMPLATE = r"""
     }
     textarea {
       width: 100%;
-      height: 88px;
+      height: 86px;
       padding: 11px;
       border: 2px solid #ffe5ec;
       border-radius: 14px;
@@ -270,15 +300,48 @@ HTML_TEMPLATE = r"""
       font-weight: 700;
       border: 1px solid #ffd166;
     }
-    .extra-item input[type="number"] {
-      width: 74px;
-      padding: 2px 5px;
+    .extra-item input[type="number"], .extra-item select {
+      padding: 2px 6px;
       border: 1px solid #f4be49;
       border-radius: 8px;
-      text-align: right;
       font-weight: bold;
       color: #5c4742;
+      background: #fff;
     }
+    .extra-item input[type="number"] { width: 74px; text-align: right; }
+
+    /* 免運進度條 */
+    .freeship-card {
+      display: none;
+      background: rgba(255, 255, 255, 0.94);
+      border: 2px solid #ffd166;
+      border-radius: 18px;
+      padding: 12px 18px;
+      margin-bottom: 14px;
+    }
+    .freeship-text {
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+      font-weight: 800;
+      margin-bottom: 6px;
+      color: #5c4742;
+    }
+    .progress-track {
+      width: 100%;
+      height: 14px;
+      background: #ffe5ec;
+      border-radius: 50px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #ff8fab, #ffd166);
+      border-radius: 50px;
+      transition: width 0.4s ease;
+    }
+    .progress-fill.reached { background: linear-gradient(90deg, #2a9d8f, #70c1b3); }
+
     .summary {
       position: sticky;
       top: 10px;
@@ -300,6 +363,9 @@ HTML_TEMPLATE = r"""
     .summary strong { font-size: 20px; color: #ffd166; margin-left: 4px; }
     .split-box { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     .buyer-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
       background: #fff0f3;
       border: 2px solid #ffb3c6;
       border-radius: 14px;
@@ -307,8 +373,23 @@ HTML_TEMPLATE = r"""
       font-size: 13px;
       font-weight: 700;
       color: #5c4742;
+      cursor: pointer;
+      transition: all 0.15s;
     }
-    .buyer-pill span { color: #fb6f92; font-size: 15px; margin-left: 5px; }
+    .buyer-pill:hover { border-color: #fb6f92; transform: translateY(-1px); }
+    .buyer-pill.active-filter { background: #ff8fab; color: #fff; border-color: #fb6f92; }
+    .buyer-pill.active-filter .pill-amt { color: #ffd166; }
+    .pill-amt { color: #fb6f92; font-size: 15px; }
+    .paid-tag {
+      font-size: 11px;
+      padding: 2px 7px;
+      border-radius: 50px;
+      font-weight: 800;
+      background: #ffe5ec;
+      color: #c9184a;
+    }
+    .paid-tag.is-paid { background: #d8f3dc; color: #1b7a68; }
+
     .table-wrap {
       background: rgba(255, 255, 255, 0.92);
       backdrop-filter: blur(10px);
@@ -318,18 +399,18 @@ HTML_TEMPLATE = r"""
       box-shadow: 0 8px 24px rgba(92, 71, 66, 0.1);
     }
     table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 9px 8px; border-bottom: 1px solid #ffe5ec; text-align: left; vertical-align: middle; }
+    th, td { padding: 9px 7px; border-bottom: 1px solid #ffe5ec; text-align: left; vertical-align: middle; }
     th { background: rgba(255, 240, 243, 0.95); font-size: 12px; color: #5c4742; font-weight: 800; white-space: nowrap; }
     tr.row-other { background: rgba(245, 240, 242, 0.55); }
     .thumb-box { display: flex; flex-direction: column; align-items: center; gap: 3px; }
-    .thumb { width: 68px; height: 68px; object-fit: cover; border-radius: 10px; border: 2px solid #ffe5ec; background: #fff; }
+    .thumb { width: 66px; height: 66px; object-fit: cover; border-radius: 10px; border: 2px solid #ffe5ec; background: #fff; }
     .btn-img { font-size: 11px; padding: 2px 7px; background: #ffe5ec; color: #5c4742; box-shadow: none; }
     .btn-img:hover { background: #ffb3c6; color: #fff; }
-    .title-input { width: 100%; min-width: 150px; padding: 4px 6px; border: 1px solid transparent; border-radius: 8px; font-size: 13px; background: transparent; color: #5c4742; font-weight: 600; }
+    .title-input { width: 100%; min-width: 145px; padding: 4px 6px; border: 1px solid transparent; border-radius: 8px; font-size: 13px; background: transparent; color: #5c4742; font-weight: 600; }
     .title-input:hover:not(:disabled), .title-input:focus { border-color: #ffb3c6; background: #fff; outline: none; }
     .spec-stack { display: flex; flex-direction: column; gap: 5px; }
     .spec-input, .spec-select {
-      width: 145px;
+      width: 140px;
       padding: 5px 6px;
       border: 1px solid #ffb3c6;
       border-radius: 8px;
@@ -338,7 +419,7 @@ HTML_TEMPLATE = r"""
       background: #fff;
     }
     .note-input {
-      width: 145px;
+      width: 140px;
       padding: 4px 6px;
       border: 1px dashed #ffb3c6;
       border-radius: 8px;
@@ -346,12 +427,15 @@ HTML_TEMPLATE = r"""
       color: #5c4742;
       background: #fff8fa;
     }
-    .buyer-input { width: 68px; padding: 5px; border: 1px solid #ffb3c6; border-radius: 8px; font-size: 12px; color: #5c4742; font-weight: 700; text-align: center; background: #fff0f3; }
+    .buyer-input { width: 66px; padding: 5px; border: 1px solid #ffb3c6; border-radius: 8px; font-size: 12px; color: #5c4742; font-weight: 700; text-align: center; background: #fff0f3; }
     input:disabled, select:disabled { background: #f3ecee !important; border-color: #e2d5d8 !important; color: #7d6b66 !important; cursor: not-allowed; }
     .curr-select { padding: 4px 5px; border: 1px solid #ffb3c6; border-radius: 8px; font-size: 12px; font-weight: bold; background: #fff; color: #5c4742; }
-    .price-input { width: 82px; padding: 5px; border: 1px solid #ffb3c6; border-radius: 8px; text-align: right; font-size: 13px; color: #5c4742; }
+    .price-input { width: 80px; padding: 5px; border: 1px solid #ffb3c6; border-radius: 8px; text-align: right; font-size: 13px; color: #5c4742; }
     .qty-input { width: 46px; padding: 5px; border: 1px solid #ffb3c6; border-radius: 8px; text-align: center; font-size: 13px; color: #5c4742; }
     .twd-price { font-weight: 800; color: #fb6f92; white-space: nowrap; font-size: 13px; }
+    .action-cell { display: flex; align-items: center; gap: 4px; }
+    .btn-plus1 { background: #ffd166; color: #5c4742; padding: 4px 8px; font-size: 11px; box-shadow: none; }
+    .btn-plus1:hover { background: #f4be49; }
     .btn-del { background: transparent; color: #bbb; box-shadow: none; padding: 3px 6px; font-size: 14px; }
     .btn-del:hover { background: #ffe5ec; color: #fb6f92; }
     .link-sm { font-size: 11px; color: #219ebc; text-decoration: none; display: inline-block; margin-top: 2px; font-weight: 600; }
@@ -392,7 +476,7 @@ HTML_TEMPLATE = r"""
   </style>
 </head>
 <body>
-  <!-- 入房密碼視窗 (優先度最高) -->
+  <!-- 入房密碼視窗 -->
   <div id="pwOverlay" class="modal-overlay" style="z-index: 1000;">
     <div class="modal-box">
       <h2>🔐 此房間設有入房密碼</h2>
@@ -441,21 +525,45 @@ HTML_TEMPLATE = r"""
 
     <!-- 團主專屬控制台 -->
     <div id="adminPanel" class="admin-panel">
-      <div style="color:#ffd166; font-size:14px;">👑 團主權限與房間控制台（僅團主可見）</div>
+      <div style="color:#ffd166; font-size:14px;">👑 團主控制台（僅團主可見）</div>
       <div class="admin-row">
         <button id="lockToggleBtn" onclick="toggleLock()"></button>
-        <span>｜ 個別授權名單：</span>
-        <input type="text" id="allowedEditorsInput" placeholder="例：小明, 小美" style="width:185px;">
+        <span>｜ 授權名單：</span>
+        <input type="text" id="allowedEditorsInput" placeholder="例：小明, 小美" style="width:160px;">
         <span>｜ 入房密碼：</span>
-        <input type="text" id="roomPwSettingInput" placeholder="留空代表免密碼" style="width:130px;">
-        <button class="btn-sm btn-rate" onclick="saveAdminSettings()">💾 套用設定</button>
+        <input type="text" id="roomPwSettingInput" placeholder="留空免密碼" style="width:110px;">
+        <span>｜ 免運門檻 NT$：</span>
+        <input type="number" id="freeShipInput" placeholder="0=不顯示" min="0" step="100" style="width:95px;">
+      </div>
+      <div class="admin-row">
+        <span>🏦 匯款資訊（會附在 LINE 報價）：</span>
+        <input type="text" id="bankInfoInput" placeholder="例：中信(822) 1234-5678-9012 / LINE Pay" style="flex:1; min-width:240px;">
+        <button class="btn-sm btn-rate" onclick="saveAdminSettings()">💾 套用全部設定</button>
+      </div>
+      <div class="admin-row" style="align-items:flex-start; flex-direction:column; gap:4px; margin-top:10px; padding-top:8px; border-top:1px dashed rgba(255,209,102,0.4);">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span>📂 所有房間管理：</span>
+          <button class="btn-sm" style="background:rgba(255,255,255,0.2); padding:2px 9px;" onclick="loadAllRooms()">🔄 重新整理</button>
+        </div>
+        <div class="rooms-list" id="roomsListBox">載入中...</div>
       </div>
     </div>
 
     <div id="lockBanner" class="lock-banner"></div>
 
+    <!-- 免運進度條 -->
+    <div id="freeShipCard" class="freeship-card">
+      <div class="freeship-text">
+        <span id="freeShipMsg">🔥 湊免運進度</span>
+        <span id="freeShipPct">0%</span>
+      </div>
+      <div class="progress-track">
+        <div id="freeShipFill" class="progress-fill" style="width:0%;"></div>
+      </div>
+    </div>
+
     <div class="card">
-      <textarea id="urlInput" placeholder="貼上各國商品網址（韓、日、中、台、美、澳皆可，一行一個；一般成員僅能編輯自己的商品）..."></textarea>
+      <textarea id="urlInput" placeholder="貼上各國商品網址（韓、日、中、台、美、澳皆可，一行一個；看到別人貼的好物也可以直接按右側 +1 跟團）..."></textarea>
       <div class="controls">
         <button id="fetchBtn" class="edit-only" onclick="fetchProducts()">✨ 抓取並加入清單</button>
         <button class="btn-add edit-only" onclick="addManualRow()">+ 手動新增</button>
@@ -481,9 +589,12 @@ HTML_TEMPLATE = r"""
           <span>💳 加上 1.5% 海外刷卡手續費</span>
         </label>
         <div class="extra-item">
-          <span>✈️ 國際運費總計 NT$</span>
+          <span>✈️ 國際運費 NT$</span>
           <input type="number" class="admin-only" id="shippingInput" value="0" min="0" step="10" onchange="pushState()">
-          <span style="font-size:12px; color:#888;">(僅團主可調整)</span>
+          <select id="shippingModeSelect" class="admin-only" onchange="pushState()">
+            <option value="qty">依件數均分</option>
+            <option value="amount">依金額比例</option>
+          </select>
         </div>
       </div>
     </div>
@@ -494,7 +605,10 @@ HTML_TEMPLATE = r"""
     </div>
 
     <div class="card" id="splitCard" style="display:none; padding: 12px 18px;">
-      <div style="font-size:13px; font-weight:800; margin-bottom:8px; color:#5c4742;">👥 團購自動分帳（已含手續費與運費均分）：</div>
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:8px;">
+        <span style="font-size:13px; font-weight:800; color:#5c4742;">👥 團購自動分帳（點名字可篩選商品；團主點標籤可標記已付款）：</span>
+        <button id="clearFilterBtn" class="btn-sm btn-add" style="display:none;" onclick="setFilterBuyer(null)">顯示全部商品</button>
+      </div>
       <div class="split-box" id="splitBox"></div>
     </div>
 
@@ -502,16 +616,16 @@ HTML_TEMPLATE = r"""
       <table>
         <thead>
           <tr>
-            <th style="width: 32px;"><input type="checkbox" class="admin-only" id="selectAll" checked onchange="toggleAll(this)"></th>
-            <th style="width: 82px; text-align:center;">商品照</th>
+            <th style="width: 30px;"><input type="checkbox" class="admin-only" id="selectAll" checked onchange="toggleAll(this)"></th>
+            <th style="width: 80px; text-align:center;">商品照</th>
             <th>商品名稱</th>
-            <th style="width: 155px;">規格 / 顏色備註</th>
-            <th style="width: 76px; text-align:center;">買家🔒</th>
-            <th style="width: 76px;">幣別</th>
-            <th style="width: 90px;">原幣單價</th>
-            <th style="width: 90px;">台幣單價</th>
-            <th style="width: 54px; text-align:center;">數量</th>
-            <th style="width: 34px;"></th>
+            <th style="width: 150px;">規格 / 顏色備註</th>
+            <th style="width: 72px; text-align:center;">買家🔒</th>
+            <th style="width: 72px;">幣別</th>
+            <th style="width: 86px;">原幣單價</th>
+            <th style="width: 86px;">台幣單價</th>
+            <th style="width: 52px; text-align:center;">數量</th>
+            <th style="width: 74px; text-align:center;">操作</th>
           </tr>
         </thead>
         <tbody id="productTable">
@@ -526,6 +640,10 @@ HTML_TEMPLATE = r"""
     let isLocked = false;
     let allowedEditors = [];
     let roomPasswordSetting = "";
+    let freeShipThreshold = 0;
+    let bankInfo = "";
+    let paidBuyers = {};
+    let filterBuyer = null;
     let isAdmin = false;
     let adminPin = "";
     let lastUpdatedAt = 0;
@@ -592,8 +710,8 @@ HTML_TEMPLATE = r"""
       return document.getElementById("myNameInput").value.trim() || getSessionName() || "訪客";
     }
 
-    function switchRoom() {
-      const newRoom = document.getElementById("roomInput").value.trim() || "大廳";
+    function switchRoom(targetName) {
+      const newRoom = (targetName || document.getElementById("roomInput").value).trim() || "大廳";
       window.location.href = `${window.location.pathname}?room=${encodeURIComponent(newRoom)}`;
     }
 
@@ -617,6 +735,20 @@ HTML_TEMPLATE = r"""
       if (isAdmin) return true;
       if (!canEdit()) return false;
       return (p.buyer || "訪客") === getMyName();
+    }
+
+    function setFilterBuyer(name) {
+      filterBuyer = (filterBuyer === name) ? null : name;
+      document.getElementById("clearFilterBtn").style.display = filterBuyer ? "inline-block" : "none";
+      renderTable();
+    }
+
+    async function togglePaid(event, buyerName) {
+      event.stopPropagation();
+      if (!isAdmin) return;
+      paidBuyers[buyerName] = !paidBuyers[buyerName];
+      recalculate();
+      await pushState();
     }
 
     function applyPermissionsUI() {
@@ -661,6 +793,46 @@ HTML_TEMPLATE = r"""
       }
     }
 
+    async function loadAllRooms() {
+      if (!isAdmin) return;
+      const box = document.getElementById("roomsListBox");
+      box.innerText = "讀取中...";
+      try {
+        const res = await fetch(`/api/rooms?adminPin=${encodeURIComponent(adminPin)}`);
+        const data = await res.json();
+        if (!data.ok || !data.rooms.length) {
+          box.innerText = "目前沒有其他房間";
+          return;
+        }
+        box.innerHTML = data.rooms.map(r => `
+          <span class="room-chip" onclick="switchRoom('${escapeHtml(r)}')">
+            🚪 ${escapeHtml(r)}
+            <span class="room-chip-del" title="刪除此房間" onclick="deleteRoom(event, '${escapeHtml(r)}')">✕</span>
+          </span>
+        `).join("");
+      } catch {
+        box.innerText = "讀取失敗";
+      }
+    }
+
+    async function deleteRoom(event, roomName) {
+      event.stopPropagation();
+      if (!isAdmin) return;
+      if (!confirm(`確定要永久刪除房間「${roomName}」與裡面的所有資料嗎？`)) return;
+      try {
+        const res = await fetch("/api/rooms", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ room: roomName, adminPin })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          loadAllRooms();
+          if (roomName === currentRoom) switchRoom("大廳");
+        }
+      } catch {}
+    }
+
     async function submitRoomPassword() {
       const pw = document.getElementById("pwInput").value.trim();
       sessionStorage.setItem("chiikawa_rpw_" + currentRoom, pw);
@@ -702,6 +874,7 @@ HTML_TEMPLATE = r"""
           applyPermissionsUI();
           renderTable();
           await pullState(true);
+          loadAllRooms();
           document.getElementById("statusText").innerText = "👑 已進入團主模式";
         } else {
           alert("密碼錯誤！");
@@ -724,10 +897,12 @@ HTML_TEMPLATE = r"""
       const rawNames = document.getElementById("allowedEditorsInput").value;
       allowedEditors = rawNames.split(/[,，\s]+/).map(s => s.trim()).filter(Boolean);
       roomPasswordSetting = document.getElementById("roomPwSettingInput").value.trim();
+      freeShipThreshold = parseFloat(document.getElementById("freeShipInput").value) || 0;
+      bankInfo = document.getElementById("bankInfoInput").value.trim();
       await pushState();
       applyPermissionsUI();
-      const pwMsg = roomPasswordSetting ? `入房密碼：${roomPasswordSetting}` : "免入房密碼";
-      document.getElementById("statusText").innerText = `💾 已套用設定（${pwMsg}）！`;
+      recalculate();
+      document.getElementById("statusText").innerText = "💾 已套用全部團主設定！";
     }
 
     async function pullState(force = false) {
@@ -763,11 +938,18 @@ HTML_TEMPLATE = r"""
         products = Array.isArray(st.products) ? st.products : [];
         isLocked = !!st.locked;
         allowedEditors = Array.isArray(st.allowedEditors) ? st.allowedEditors : [];
+        freeShipThreshold = parseFloat(st.freeShipThreshold) || 0;
+        bankInfo = st.bankInfo || "";
+        paidBuyers = (st.paidBuyers && typeof st.paidBuyers === "object") ? st.paidBuyers : {};
 
-        if (isAdmin && typeof st.roomPassword === "string") {
-          roomPasswordSetting = st.roomPassword;
+        if (isAdmin) {
+          if (typeof st.roomPassword === "string") {
+            roomPasswordSetting = st.roomPassword;
+            document.getElementById("roomPwSettingInput").value = roomPasswordSetting;
+          }
           document.getElementById("allowedEditorsInput").value = allowedEditors.join(", ");
-          document.getElementById("roomPwSettingInput").value = roomPasswordSetting;
+          document.getElementById("freeShipInput").value = freeShipThreshold || "";
+          document.getElementById("bankInfoInput").value = bankInfo;
         }
 
         if (st.rates) {
@@ -778,6 +960,7 @@ HTML_TEMPLATE = r"""
         }
         document.getElementById("feeCheck").checked = !!st.feeChecked;
         document.getElementById("shippingInput").value = st.shipping || 0;
+        document.getElementById("shippingModeSelect").value = st.shippingMode || "qty";
 
         applyPermissionsUI();
         renderTable();
@@ -797,6 +980,10 @@ HTML_TEMPLATE = r"""
         rates: getRates(),
         feeChecked: document.getElementById("feeCheck").checked,
         shipping: parseFloat(document.getElementById("shippingInput").value) || 0,
+        shippingMode: document.getElementById("shippingModeSelect").value || "qty",
+        freeShipThreshold: freeShipThreshold,
+        bankInfo: bankInfo,
+        paidBuyers: paidBuyers,
         locked: isLocked,
         allowedEditors: allowedEditors,
         roomPassword: roomPasswordSetting,
@@ -925,6 +1112,18 @@ HTML_TEMPLATE = r"""
       await pushState();
     }
 
+    async function duplicateItem(idx) {
+      if (!canEdit()) return alert("目前沒有編輯權限！");
+      const src = products[idx];
+      const copy = JSON.parse(JSON.stringify(src));
+      copy.buyer = getMyName();
+      copy.qty = 1;
+      copy.checked = true;
+      products.push(copy);
+      await pushState();
+      document.getElementById("statusText").innerText = `✨ 已幫「${copy.buyer}」跟團 +1！記得選自己的尺寸顏色喔`;
+    }
+
     async function editImage(idx) {
       if (!canEditRow(products[idx])) return;
       const newUrl = prompt("請貼上商品圖片網址 (右鍵複製圖片位址)：", products[idx].img || "");
@@ -978,6 +1177,7 @@ HTML_TEMPLATE = r"""
     function renderTable() {
       const tbody = document.getElementById("productTable");
       const buyerDis = isAdmin ? "" : "disabled";
+      const canPlusOne = canEdit();
 
       if (products.length === 0) {
         tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; color:#999; padding:36px;">「${escapeHtml(currentRoom)}」目前是空的，貼上網址就能一起買啦 🛒</td></tr>`;
@@ -985,7 +1185,9 @@ HTML_TEMPLATE = r"""
         return;
       }
 
-      tbody.innerHTML = products.map((p, idx) => {
+      const rowsHtml = products.map((p, idx) => {
+        if (filterBuyer && (p.buyer || "訪客") !== filterBuyer) return "";
+
         const rowEditable = canEditRow(p);
         const rowDis = rowEditable ? "" : "disabled";
         const rowClass = rowEditable ? "" : "row-other";
@@ -1013,11 +1215,17 @@ HTML_TEMPLATE = r"""
           <td><input type="number" class="price-input" id="price-${idx}" value="${p.price}" step="any" min="0" ${rowDis} onfocus="isEditingNow=true" onblur="isEditingNow=false;syncAndPush(${idx})"></td>
           <td class="twd-price" id="twd-${idx}">NT$0</td>
           <td><input type="number" class="qty-input" id="qty-${idx}" value="${p.qty || 1}" min="1" ${rowDis} onchange="syncAndPush(${idx})"></td>
-          <td>${rowEditable ? `<button class="btn-del" title="刪除" onclick="deleteRow(${idx})">✕</button>` : ''}</td>
+          <td>
+            <div class="action-cell">
+              ${canPlusOne ? `<button class="btn-plus1" title="跟團 +1（複製給自己）" onclick="duplicateItem(${idx})">+1</button>` : ''}
+              ${rowEditable ? `<button class="btn-del" title="刪除" onclick="deleteRow(${idx})">✕</button>` : ''}
+            </div>
+          </td>
         </tr>
       `;
       }).join("");
 
+      tbody.innerHTML = rowsHtml || `<tr><td colspan="10" style="text-align:center; color:#999; padding:30px;">沒有符合篩選條件的商品</td></tr>`;
       recalculate();
     }
 
@@ -1050,6 +1258,7 @@ HTML_TEMPLATE = r"""
       const rates = getRates();
       const feeMult = document.getElementById("feeCheck").checked ? 1.015 : 1;
       const shipping = parseFloat(document.getElementById("shippingInput").value) || 0;
+      const shippingMode = document.getElementById("shippingModeSelect").value || "qty";
 
       let totalQty = 0;
       let totalGoodsTwd = 0;
@@ -1073,52 +1282,86 @@ HTML_TEMPLATE = r"""
         }
       });
 
-      const shippingPerItem = totalQty > 0 ? shipping / totalQty : 0;
       for (const b of Object.values(buyers)) {
-        b.shippingShare = Math.round(shippingPerItem * b.qty);
+        if (shippingMode === "amount") {
+          b.shippingShare = totalGoodsTwd > 0 ? Math.round(shipping * (b.goodsTwd / totalGoodsTwd)) : 0;
+        } else {
+          b.shippingShare = totalQty > 0 ? Math.round((shipping / totalQty) * b.qty) : 0;
+        }
         b.finalTwd = b.goodsTwd + b.shippingShare;
       }
 
-      return { totalQty, totalTwd: totalGoodsTwd + Math.round(shipping), shipping, feeChecked: feeMult > 1, buyers };
+      return { totalQty, totalGoodsTwd, totalTwd: totalGoodsTwd + Math.round(shipping), shipping, shippingMode, feeChecked: feeMult > 1, buyers };
     }
 
     function recalculate() {
-      const { totalQty, totalTwd, buyers } = getBreakdown();
+      const { totalQty, totalGoodsTwd, totalTwd, buyers } = getBreakdown();
       document.getElementById("selectedCount").innerText = totalQty;
       document.getElementById("totalTwd").innerText = `NT$${totalTwd.toLocaleString()}`;
 
+      // 免運進度條
+      const fsCard = document.getElementById("freeShipCard");
+      if (freeShipThreshold > 0) {
+        fsCard.style.display = "block";
+        const pct = Math.min(100, Math.round((totalGoodsTwd / freeShipThreshold) * 100));
+        const diff = Math.max(0, Math.round(freeShipThreshold - totalGoodsTwd));
+        document.getElementById("freeShipPct").innerText = `${pct}%`;
+        const fill = document.getElementById("freeShipFill");
+        fill.style.width = `${pct}%`;
+        if (diff === 0) {
+          fill.classList.add("reached");
+          document.getElementById("freeShipMsg").innerText = `🎉 太棒了！商品總額已達 NT$${freeShipThreshold.toLocaleString()} 免運門檻！`;
+        } else {
+          fill.classList.remove("reached");
+          document.getElementById("freeShipMsg").innerText = `🔥 距離免運門檻（NT$${freeShipThreshold.toLocaleString()}）還差 NT$${diff.toLocaleString()}，快揪朋友 +1！`;
+        }
+      } else {
+        fsCard.style.display = "none";
+      }
+
+      // 分帳膠囊（支援篩選 + 付款標記）
       const splitCard = document.getElementById("splitCard");
       const splitBox = document.getElementById("splitBox");
       const buyerEntries = Object.entries(buyers);
 
       if (buyerEntries.length > 0) {
         splitCard.style.display = "block";
-        splitBox.innerHTML = buyerEntries.map(([name, info]) => `
-          <div class="buyer-pill">
-            👤 ${escapeHtml(name)} (${info.qty}件)
-            <span>NT$${info.finalTwd.toLocaleString()}</span>
-          </div>
-        `).join("");
+        splitBox.innerHTML = buyerEntries.map(([name, info]) => {
+          const isPaid = !!paidBuyers[name];
+          const activeCls = filterBuyer === name ? "active-filter" : "";
+          const paidBadge = `<span class="paid-tag ${isPaid ? 'is-paid' : ''}" onclick="togglePaid(event, '${escapeHtml(name)}')" title="${isAdmin ? '點此切換付款狀態' : ''}">${isPaid ? '✅ 已付' : '💰 未付'}</span>`;
+          return `
+            <div class="buyer-pill ${activeCls}" onclick="setFilterBuyer('${escapeHtml(name)}')">
+              <span>👤 ${escapeHtml(name)} (${info.qty}件)</span>
+              <span class="pill-amt">NT$${info.finalTwd.toLocaleString()}</span>
+              ${paidBadge}
+            </div>
+          `;
+        }).join("");
       } else {
         splitCard.style.display = "none";
       }
     }
 
     function copyLineText() {
-      const { totalQty, totalTwd, shipping, feeChecked, buyers } = getBreakdown();
+      const { totalQty, totalTwd, shipping, shippingMode, feeChecked, buyers } = getBreakdown();
       if (totalQty === 0) return alert("請至少勾選一件商品！");
 
       let lines = [`🛍️ 跨國團購結帳清單【${currentRoom}】`];
       if (feeChecked || shipping > 0) {
         let notes = [];
         if (feeChecked) notes.push("含1.5%刷卡費");
-        if (shipping > 0) notes.push(`運費NT$${shipping}按件均分`);
+        if (shipping > 0) {
+          const modeTxt = shippingMode === "amount" ? "依金額比例分攤" : "依件數均分";
+          notes.push(`運費NT$${shipping}(${modeTxt})`);
+        }
         lines.push(`(${notes.join(" / ")})`);
       }
       lines.push("━━━━━━━━━━━━");
 
       for (const [name, info] of Object.entries(buyers)) {
-        lines.push(`👤 ${name}（${info.qty}件）`);
+        const paidTxt = paidBuyers[name] ? " ✅已付款" : " 💰未付款";
+        lines.push(`👤 ${name}（${info.qty}件）${paidTxt}`);
         info.items.forEach(it => {
           const specStr = it.fullSpec ? ` [${it.fullSpec}]` : "";
           lines.push(`• ${it.title}${specStr} x${it.qty} — NT$${it.subTwd.toLocaleString()}`);
@@ -1132,6 +1375,9 @@ HTML_TEMPLATE = r"""
 
       lines.push("━━━━━━━━━━━━");
       lines.push(`💰 總計：NT$${totalTwd.toLocaleString()}（共 ${totalQty} 件）`);
+      if (bankInfo) {
+        lines.push(`🏦 匯款資訊：${bankInfo}`);
+      }
 
       navigator.clipboard.writeText(lines.join("\n")).then(() => {
         document.getElementById("statusText").innerText = "📋 已複製 LINE 報價清單！";
@@ -1162,7 +1408,8 @@ HTML_TEMPLATE = r"""
             items: selectedItems,
             rates: getRates(),
             feeChecked: document.getElementById("feeCheck").checked,
-            shipping: parseFloat(document.getElementById("shippingInput").value) || 0
+            shipping: parseFloat(document.getElementById("shippingInput").value) || 0,
+            shippingMode: document.getElementById("shippingModeSelect").value || "qty"
           })
         });
         if (!res.ok) throw new Error("匯出失敗");
@@ -1257,6 +1504,37 @@ def api_verify_admin():
     pin = str(request.json.get("pin", "")).strip()
     return jsonify({"ok": pin == ADMIN_PIN})
 
+@app.route("/api/rooms", methods=["GET", "DELETE"])
+def api_rooms():
+    if request.method == "GET":
+        req_pin = request.args.get("adminPin", "").strip()
+        if req_pin != ADMIN_PIN:
+            return jsonify({"ok": False}), 403
+        if not FIREBASE_URL:
+            return jsonify({"ok": True, "rooms": list(LOCAL_ROOMS.keys())})
+        try:
+            res = requests.get(f"{FIREBASE_URL}/rooms.json?shallow=true", timeout=6)
+            data = res.json()
+            rooms = list(data.keys()) if isinstance(data, dict) else []
+            return jsonify({"ok": True, "rooms": rooms})
+        except Exception:
+            return jsonify({"ok": False, "rooms": []})
+
+    data = request.json or {}
+    if str(data.get("adminPin", "")).strip() != ADMIN_PIN:
+        return jsonify({"ok": False}), 403
+    room_id = sanitize_room(data.get("room", ""))
+    if not room_id:
+        return jsonify({"ok": False})
+    if not FIREBASE_URL:
+        LOCAL_ROOMS.pop(room_id, None)
+        return jsonify({"ok": True})
+    try:
+        requests.delete(f"{FIREBASE_URL}/rooms/{quote(room_id)}.json", timeout=6)
+        return jsonify({"ok": True})
+    except Exception:
+        return jsonify({"ok": False})
+
 @app.route("/api/state", methods=["GET", "POST"])
 def api_state():
     if request.method == "GET":
@@ -1316,6 +1594,10 @@ def api_state():
         new_rates = data.get("rates", current.get("rates", {}))
         new_fee = bool(data.get("feeChecked", False))
         new_shipping = float(data.get("shipping", 0))
+        new_ship_mode = data.get("shippingMode", "qty")
+        new_free_ship = float(data.get("freeShipThreshold", 0))
+        new_bank = str(data.get("bankInfo", "")).strip()
+        new_paid = data.get("paidBuyers", current.get("paidBuyers", {}))
         new_locked = bool(data.get("locked", current.get("locked", False)))
         new_allowed = data.get("allowedEditors", allowed_list)
         new_rpw = str(data.get("roomPassword", room_pw)).strip()
@@ -1326,6 +1608,10 @@ def api_state():
         new_rates = current.get("rates", {})
         new_fee = bool(current.get("feeChecked", False))
         new_shipping = float(current.get("shipping", 0))
+        new_ship_mode = current.get("shippingMode", "qty")
+        new_free_ship = float(current.get("freeShipThreshold", 0))
+        new_bank = current.get("bankInfo", "")
+        new_paid = current.get("paidBuyers", {})
         new_locked = bool(current.get("locked", False))
         new_allowed = allowed_list
         new_rpw = room_pw
@@ -1335,6 +1621,10 @@ def api_state():
         "rates": new_rates,
         "feeChecked": new_fee,
         "shipping": new_shipping,
+        "shippingMode": new_ship_mode,
+        "freeShipThreshold": new_free_ship,
+        "bankInfo": new_bank,
+        "paidBuyers": new_paid,
         "locked": new_locked,
         "allowedEditors": new_allowed,
         "roomPassword": new_rpw,
@@ -1562,9 +1852,13 @@ def api_export():
     rates = data.get("rates", {})
     fee_mult = 1.015 if data.get("feeChecked") else 1.0
     shipping = float(data.get("shipping", 0))
+    shipping_mode = data.get("shippingMode", "qty")
 
     total_qty = sum(int(it.get("qty", 1)) for it in items)
-    shipping_per_item = shipping / total_qty if total_qty > 0 else 0
+    total_goods_twd = sum(
+        round(float(it.get("price", 0)) * float(rates.get(it.get("currency", "TWD"), 1)) * fee_mult) * int(it.get("qty", 1))
+        for it in items
+    )
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -1595,8 +1889,14 @@ def api_export():
         price = float(item.get("price", 0))
         qty = int(item.get("qty", 1))
         unit_twd = round(price * rate * fee_mult)
-        ship_share = round(shipping_per_item * qty)
-        subtotal_twd = unit_twd * qty + ship_share
+        goods_sub = unit_twd * qty
+
+        if shipping_mode == "amount":
+            ship_share = round(shipping * (goods_sub / total_goods_twd)) if total_goods_twd > 0 else 0
+        else:
+            ship_share = round((shipping / total_qty) * qty) if total_qty > 0 else 0
+
+        subtotal_twd = goods_sub + ship_share
         grand_total += subtotal_twd
 
         ws.row_dimensions[row_idx].height = 78
