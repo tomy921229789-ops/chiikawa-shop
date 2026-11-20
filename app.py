@@ -29,6 +29,8 @@ def default_room_state():
         "feeChecked": False,
         "shipping": 0,
         "locked": False,
+        "allowedEditors": [],
+        "roomPassword": "",
         "updatedAt": 0
     }
 
@@ -135,6 +137,32 @@ HTML_TEMPLATE = r"""
       border: 1px solid #a3e4d7;
       font-size: 12px;
       font-weight: 800;
+    }
+    .admin-panel {
+      display: none;
+      background: rgba(92, 71, 66, 0.95);
+      color: #fff;
+      border: 2px solid #ffd166;
+      border-radius: 18px;
+      padding: 14px 18px;
+      margin-bottom: 14px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .admin-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      margin-top: 8px;
+    }
+    .admin-panel input {
+      padding: 5px 10px;
+      border: 1px solid #ffd166;
+      border-radius: 10px;
+      font-size: 13px;
+      color: #5c4742;
+      font-weight: 700;
     }
     .lock-banner {
       background: #ffccd5;
@@ -318,6 +346,7 @@ HTML_TEMPLATE = r"""
       background: #fff8fa;
     }
     .buyer-input { width: 68px; padding: 5px; border: 1px solid #ffb3c6; border-radius: 8px; font-size: 12px; color: #5c4742; font-weight: 700; text-align: center; background: #fff0f3; }
+    .buyer-input:disabled { background: #f3ecee; border-color: #e2d5d8; color: #6e5a55; cursor: not-allowed; }
     .curr-select { padding: 4px 5px; border: 1px solid #ffb3c6; border-radius: 8px; font-size: 12px; font-weight: bold; background: #fff; color: #5c4742; }
     .price-input { width: 82px; padding: 5px; border: 1px solid #ffb3c6; border-radius: 8px; text-align: right; font-size: 13px; color: #5c4742; }
     .qty-input { width: 46px; padding: 5px; border: 1px solid #ffb3c6; border-radius: 8px; text-align: center; font-size: 13px; color: #5c4742; }
@@ -327,9 +356,57 @@ HTML_TEMPLATE = r"""
     .link-sm { font-size: 11px; color: #219ebc; text-decoration: none; display: inline-block; margin-top: 2px; font-weight: 600; }
     .link-sm:hover { text-decoration: underline; }
     .status { font-size: 12px; color: #5c4742; margin-left: auto; font-weight: 700; }
+
+    /* 入房密碼遮罩 */
+    .pw-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 999;
+      background: rgba(92, 71, 66, 0.75);
+      backdrop-filter: blur(8px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .pw-box {
+      background: #fff;
+      border: 3px solid #ffb3c6;
+      border-radius: 24px;
+      padding: 28px 24px;
+      max-width: 360px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.25);
+    }
+    .pw-box h2 { margin: 0 0 10px; font-size: 18px; color: #5c4742; }
+    .pw-box input {
+      width: 100%;
+      padding: 10px 14px;
+      border: 2px solid #ffb3c6;
+      border-radius: 12px;
+      font-size: 15px;
+      text-align: center;
+      margin: 12px 0;
+      outline: none;
+    }
   </style>
 </head>
 <body>
+  <!-- 入房密碼視窗 -->
+  <div id="pwOverlay" class="pw-overlay">
+    <div class="pw-box">
+      <h2>🔐 此房間設有入房密碼</h2>
+      <div style="font-size:13px; color:#888;">請輸入密碼以進入「<span id="pwRoomName"></span>」</div>
+      <input type="password" id="pwInput" placeholder="請輸入入房密碼" onkeydown="if(event.key==='Enter') submitRoomPassword()">
+      <div id="pwError" style="color:#e63946; font-size:12px; font-weight:700; min-height:18px; margin-bottom:8px;"></div>
+      <div style="display:flex; gap:8px; justify-content:center;">
+        <button onclick="submitRoomPassword()">進入房間</button>
+        <button class="btn-admin" onclick="toggleAdminLogin()">👑 團主登入</button>
+      </div>
+    </div>
+  </div>
+
   <div class="container">
     <div class="top-bar">
       <h1 class="header-title">🛍️ 吉伊卡哇多人團購神器</h1>
@@ -338,7 +415,6 @@ HTML_TEMPLATE = r"""
         <input type="text" id="myNameInput" placeholder="輸入暱稱" oninput="saveMyName()">
         <span id="syncBadge" style="font-size:12px; color:#2a9d8f;">☁️ 連線中...</span>
         <button id="adminBtn" class="btn-admin" onclick="toggleAdminLogin()">👑 團主管理</button>
-        <button id="lockToggleBtn" style="display:none;" onclick="toggleLock()"></button>
       </div>
     </div>
 
@@ -352,9 +428,20 @@ HTML_TEMPLATE = r"""
       <div class="online-box" id="onlineBox">🟢 目前在線：讀取中...</div>
     </div>
 
-    <div id="lockBanner" class="lock-banner">
-      🔒 團主已鎖定結單，目前為「僅供檢視」模式（無法新增或修改商品）
+    <!-- 團主專屬控制台 -->
+    <div id="adminPanel" class="admin-panel">
+      <div style="color:#ffd166; font-size:14px;">👑 團主權限與房間控制台（僅團主可見）</div>
+      <div class="admin-row">
+        <button id="lockToggleBtn" onclick="toggleLock()"></button>
+        <span>｜ 個別授權名單：</span>
+        <input type="text" id="allowedEditorsInput" placeholder="例：小明, 小美" style="width:200px;">
+        <span>｜ 入房密碼：</span>
+        <input type="text" id="roomPwSettingInput" placeholder="留空代表免密碼" style="width:130px;">
+        <button class="btn-sm btn-rate" onclick="saveAdminSettings()">💾 套用設定</button>
+      </div>
     </div>
+
+    <div id="lockBanner" class="lock-banner"></div>
 
     <div class="card">
       <textarea id="urlInput" placeholder="貼上各國商品網址（韓、日、中、台、美、澳皆可，一行一個，會自動帶入你的名字與規格庫存）..."></textarea>
@@ -408,7 +495,7 @@ HTML_TEMPLATE = r"""
             <th style="width: 82px; text-align:center;">商品照</th>
             <th>商品名稱</th>
             <th style="width: 155px;">規格 / 顏色備註</th>
-            <th style="width: 76px; text-align:center;">買家</th>
+            <th style="width: 76px; text-align:center;">買家🔒</th>
             <th style="width: 76px;">幣別</th>
             <th style="width: 90px;">原幣單價</th>
             <th style="width: 90px;">台幣單價</th>
@@ -426,6 +513,8 @@ HTML_TEMPLATE = r"""
   <script>
     let products = [];
     let isLocked = false;
+    let allowedEditors = [];
+    let roomPasswordSetting = "";
     let isAdmin = false;
     let adminPin = "";
     let lastUpdatedAt = 0;
@@ -441,10 +530,15 @@ HTML_TEMPLATE = r"""
     const urlParams = new URLSearchParams(window.location.search);
     let currentRoom = (urlParams.get("room") || "大廳").trim();
 
+    function getSavedRoomPw() {
+      return sessionStorage.getItem("chiikawa_rpw_" + currentRoom) || "";
+    }
+
     window.addEventListener("DOMContentLoaded", async () => {
       const savedName = localStorage.getItem("chiikawa_my_name") || "訪客";
       document.getElementById("myNameInput").value = savedName;
       document.getElementById("roomInput").value = currentRoom;
+      document.getElementById("pwRoomName").innerText = currentRoom;
       await pullState(true);
       setInterval(() => {
         if (!isEditingNow) pullState(false);
@@ -453,6 +547,8 @@ HTML_TEMPLATE = r"""
 
     function saveMyName() {
       localStorage.setItem("chiikawa_my_name", document.getElementById("myNameInput").value.trim() || "訪客");
+      applyPermissionsUI();
+      renderTable();
     }
 
     function getMyName() {
@@ -461,39 +557,68 @@ HTML_TEMPLATE = r"""
 
     function switchRoom() {
       const newRoom = document.getElementById("roomInput").value.trim() || "大廳";
-      const nextUrl = `${window.location.pathname}?room=${encodeURIComponent(newRoom)}`;
-      window.location.href = nextUrl;
+      window.location.href = `${window.location.pathname}?room=${encodeURIComponent(newRoom)}`;
     }
 
     function copyRoomLink() {
       const roomName = document.getElementById("roomInput").value.trim() || currentRoom;
       const shareUrl = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(roomName)}`;
       navigator.clipboard.writeText(shareUrl).then(() => {
-        document.getElementById("statusText").innerText = `🔗 已複製「${roomName}」房間連結！快傳給朋友吧`;
+        document.getElementById("statusText").innerText = `🔗 已複製「${roomName}」房間連結！`;
       }).catch(() => {
         prompt("請手動複製此房間連結：", shareUrl);
       });
     }
 
     function canEdit() {
-      return !isLocked || isAdmin;
+      if (isAdmin) return true;
+      if (!isLocked) return true;
+      return allowedEditors.includes(getMyName());
     }
 
     function applyPermissionsUI() {
       const editable = canEdit();
-      document.getElementById("lockBanner").style.display = isLocked ? "block" : "none";
+      const banner = document.getElementById("lockBanner");
+
+      if (isLocked) {
+        banner.style.display = "block";
+        if (isAdmin) {
+          banner.innerText = `🔒 房間已鎖定：目前僅限團主與授權名單（${allowedEditors.join("、") || "無"}）可編輯`;
+        } else if (editable) {
+          banner.innerText = `✨ 你已被團主個別授權編輯此房間（其他未授權成員僅供檢視）`;
+        } else {
+          banner.innerText = `🔒 團主已鎖定此房間，目前為「僅供檢視」模式`;
+        }
+      } else {
+        banner.style.display = "none";
+      }
+
       document.getElementById("urlInput").disabled = !editable;
       document.querySelectorAll(".edit-only").forEach(el => { el.disabled = !editable; });
 
+      const adminPanel = document.getElementById("adminPanel");
       const lockBtn = document.getElementById("lockToggleBtn");
       if (isAdmin) {
-        lockBtn.style.display = "inline-block";
+        adminPanel.style.display = "block";
         lockBtn.className = isLocked ? "btn-lock-on" : "btn-lock-off";
-        lockBtn.innerText = isLocked ? "🔒 目前已鎖定（點此開放）" : "🔓 開放編輯中（點此鎖定）";
+        lockBtn.innerText = isLocked ? "🔒 僅限授權名單（點此全體開放）" : "🔓 全體開放中（點此鎖定）";
         document.getElementById("adminBtn").innerText = "👑 團主已登入";
       } else {
-        lockBtn.style.display = "none";
+        adminPanel.style.display = "none";
         document.getElementById("adminBtn").innerText = "👑 團主管理";
+      }
+    }
+
+    async function submitRoomPassword() {
+      const pw = document.getElementById("pwInput").value.trim();
+      sessionStorage.setItem("chiikawa_rpw_" + currentRoom, pw);
+      document.getElementById("pwError").innerText = "驗證中...";
+      const ok = await pullState(true);
+      if (!ok) {
+        document.getElementById("pwError").innerText = "❌ 密碼錯誤，請再試一次";
+      } else {
+        document.getElementById("pwError").innerText = "";
+        document.getElementById("pwOverlay").style.display = "none";
       }
     }
 
@@ -518,9 +643,9 @@ HTML_TEMPLATE = r"""
       if (data.ok) {
         isAdmin = true;
         adminPin = pin;
-        applyPermissionsUI();
-        renderTable();
-        document.getElementById("statusText").innerText = "👑 已進入團主模式，可控制鎖定權限";
+        document.getElementById("pwOverlay").style.display = "none";
+        await pullState(true);
+        document.getElementById("statusText").innerText = "👑 已進入團主模式";
       } else {
         alert("密碼錯誤！");
       }
@@ -534,30 +659,55 @@ HTML_TEMPLATE = r"""
       renderTable();
     }
 
+    async function saveAdminSettings() {
+      if (!isAdmin) return;
+      const rawNames = document.getElementById("allowedEditorsInput").value;
+      allowedEditors = rawNames.split(/[,，\s]+/).map(s => s.trim()).filter(Boolean);
+      roomPasswordSetting = document.getElementById("roomPwSettingInput").value.trim();
+      await pushState();
+      applyPermissionsUI();
+      document.getElementById("statusText").innerText = "💾 已套用授權名單與入房密碼！";
+    }
+
     async function pullState(force = false) {
       try {
         const qs = new URLSearchParams({
           room: currentRoom,
           cid: clientId,
-          name: getMyName()
+          name: getMyName(),
+          rpw: getSavedRoomPw(),
+          adminPin: adminPin
         });
         const res = await fetch(`/api/state?${qs.toString()}`);
         const data = await res.json();
+
+        if (data.needPassword) {
+          document.getElementById("pwOverlay").style.display = "flex";
+          return false;
+        }
+        document.getElementById("pwOverlay").style.display = "none";
+
         const badge = document.getElementById("syncBadge");
         badge.innerText = data.cloud ? "☁️ 雲端同步中" : "⚠️ 單機暫存";
         badge.style.color = data.cloud ? "#2a9d8f" : "#e76f51";
 
         const online = data.online || [];
-        const onlineBox = document.getElementById("onlineBox");
-        onlineBox.innerText = `🟢 目前在線 (${online.length})：${online.join("、") || getMyName()}`;
+        document.getElementById("onlineBox").innerText = `🟢 目前在線 (${online.length})：${online.join("、") || getMyName()}`;
 
         const st = data.state;
-        if (!st) return;
-        if (!force && st.updatedAt && st.updatedAt <= lastUpdatedAt) return;
+        if (!st) return true;
+        if (!force && st.updatedAt && st.updatedAt <= lastUpdatedAt) return true;
 
         lastUpdatedAt = st.updatedAt || Date.now();
         products = Array.isArray(st.products) ? st.products : [];
         isLocked = !!st.locked;
+        allowedEditors = Array.isArray(st.allowedEditors) ? st.allowedEditors : [];
+
+        if (isAdmin && typeof st.roomPassword === "string") {
+          roomPasswordSetting = st.roomPassword;
+          document.getElementById("allowedEditorsInput").value = allowedEditors.join(", ");
+          document.getElementById("roomPwSettingInput").value = roomPasswordSetting;
+        }
 
         if (st.rates) {
           for (const [k, v] of Object.entries(st.rates)) {
@@ -570,18 +720,25 @@ HTML_TEMPLATE = r"""
 
         applyPermissionsUI();
         renderTable();
-      } catch {}
+        return true;
+      } catch {
+        return false;
+      }
     }
 
     async function pushState() {
       if (!canEdit()) return;
       const payload = {
         room: currentRoom,
+        userName: getMyName(),
+        rpw: getSavedRoomPw(),
         products: products,
         rates: getRates(),
         feeChecked: document.getElementById("feeCheck").checked,
         shipping: parseFloat(document.getElementById("shippingInput").value) || 0,
         locked: isLocked,
+        allowedEditors: allowedEditors,
+        roomPassword: roomPasswordSetting,
         adminPin: adminPin
       };
       try {
@@ -650,7 +807,7 @@ HTML_TEMPLATE = r"""
     }
 
     async function fetchProducts() {
-      if (!canEdit()) return alert("團主已鎖定結單！");
+      if (!canEdit()) return alert("目前沒有編輯權限！");
       const rawText = document.getElementById("urlInput").value.trim();
       if (!rawText) return alert("請先貼上至少一個網址！");
 
@@ -694,7 +851,7 @@ HTML_TEMPLATE = r"""
       document.getElementById("urlInput").value = "";
       btn.disabled = false;
       btn.innerText = "✨ 抓取並加入清單";
-      status.innerText = `✨ 已為「${myName}」新增 ${added} 件商品並同步`;
+      status.innerText = `✨ 已為「${myName}」新增 ${added} 件商品並鎖定買家`;
       isEditingNow = false;
     }
 
@@ -762,6 +919,8 @@ HTML_TEMPLATE = r"""
       const tbody = document.getElementById("productTable");
       const editable = canEdit();
       const dis = editable ? "" : "disabled";
+      // 買家欄：送出後只有團主能改
+      const buyerDis = isAdmin ? "" : "disabled";
 
       if (products.length === 0) {
         tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; color:#999; padding:36px;">「${escapeHtml(currentRoom)}」目前是空的，輸入名字後貼上網址就能一起買啦 🛒</td></tr>`;
@@ -783,7 +942,7 @@ HTML_TEMPLATE = r"""
             ${p.url ? `<a class="link-sm" href="${p.url}" target="_blank">開啟原網頁 ↗</a>` : ''}
           </td>
           <td>${renderSpecCell(p, idx, dis)}</td>
-          <td><input type="text" class="buyer-input" id="buyer-${idx}" value="${escapeHtml(p.buyer || '訪客')}" ${dis} onfocus="isEditingNow=true" onblur="isEditingNow=false;syncAndPush(${idx})"></td>
+          <td><input type="text" class="buyer-input" id="buyer-${idx}" value="${escapeHtml(p.buyer || '訪客')}" ${buyerDis} title="${isAdmin ? '團主可修改買家' : '買家已鎖定，僅團主可修改'}" onfocus="isEditingNow=true" onblur="isEditingNow=false;syncAndPush(${idx})"></td>
           <td>
             <select class="curr-select" id="curr-${idx}" ${dis} onchange="syncAndPush(${idx})">
               ${CURRENCIES.map(c => `<option value="${c}" ${p.currency === c ? 'selected' : ''}>${c}</option>`).join("")}
@@ -808,7 +967,9 @@ HTML_TEMPLATE = r"""
       products[idx].spec = document.getElementById(`spec-${idx}`).value;
       const noteEl = document.getElementById(`note-${idx}`);
       products[idx].note = noteEl ? noteEl.value : "";
-      products[idx].buyer = document.getElementById(`buyer-${idx}`).value.trim() || "訪客";
+      if (isAdmin) {
+        products[idx].buyer = document.getElementById(`buyer-${idx}`).value.trim() || "訪客";
+      }
       products[idx].currency = document.getElementById(`curr-${idx}`).value;
       products[idx].price = parseFloat(document.getElementById(`price-${idx}`).value) || 0;
       products[idx].qty = parseInt(document.getElementById(`qty-${idx}`).value) || 1;
@@ -984,8 +1145,11 @@ def get_room_bundle(room_id):
         res = requests.get(f"{FIREBASE_URL}/rooms/{quote(room_id)}.json", timeout=6)
         data = res.json()
         if isinstance(data, dict):
+            st = default_room_state()
+            if isinstance(data.get("state"), dict):
+                st.update(data["state"])
             return {
-                "state": data.get("state") or default_room_state(),
+                "state": st,
                 "presence": data.get("presence") or {}
             }
     except Exception:
@@ -1038,20 +1202,35 @@ def api_state():
         room_id = sanitize_room(request.args.get("room", "大廳"))
         cid = request.args.get("cid", "").strip()
         name = (request.args.get("name", "訪客").strip() or "訪客")[:15]
+        rpw = request.args.get("rpw", "").strip()
+        req_pin = request.args.get("adminPin", "").strip()
+        is_admin = (req_pin == ADMIN_PIN)
+
+        bundle = get_room_bundle(room_id)
+        st = dict(bundle["state"])
+        room_pw = str(st.get("roomPassword", "")).strip()
+
+        if room_pw and not is_admin and rpw != room_pw:
+            return jsonify({"needPassword": True, "cloud": bool(FIREBASE_URL)})
 
         if cid:
             update_presence(room_id, cid, name)
+            bundle = get_room_bundle(room_id)
 
-        bundle = get_room_bundle(room_id)
         now = int(time.time())
         online_names = []
         for _, info in (bundle.get("presence") or {}).items():
             if isinstance(info, dict) and now - info.get("ts", 0) <= 18:
                 online_names.append(info.get("name", "訪客"))
 
+        # 非團主不回傳房間密碼明文
+        if not is_admin:
+            st.pop("roomPassword", None)
+
         return jsonify({
+            "needPassword": False,
             "cloud": bool(FIREBASE_URL),
-            "state": bundle["state"],
+            "state": st,
             "online": online_names
         })
 
@@ -1060,17 +1239,29 @@ def api_state():
     current = get_room_bundle(room_id)["state"]
     req_pin = str(data.get("adminPin", "")).strip()
     is_admin = (req_pin == ADMIN_PIN)
+    user_name = str(data.get("userName", "")).strip()
+    rpw = str(data.get("rpw", "")).strip()
 
-    if current.get("locked") and not is_admin:
-        return jsonify({"ok": False, "error": "團主已鎖定結單，目前無法修改！"}), 403
+    room_pw = str(current.get("roomPassword", "")).strip()
+    if room_pw and not is_admin and rpw != room_pw:
+        return jsonify({"ok": False, "error": "入房密碼驗證失敗！"}), 403
+
+    allowed_list = current.get("allowedEditors") or []
+    if current.get("locked") and not is_admin and user_name not in allowed_list:
+        return jsonify({"ok": False, "error": "團主已鎖定此房間，你目前沒有編輯權限！"}), 403
 
     new_locked = bool(data.get("locked", current.get("locked", False))) if is_admin else bool(current.get("locked", False))
+    new_allowed = data.get("allowedEditors", allowed_list) if is_admin else allowed_list
+    new_rpw = str(data.get("roomPassword", room_pw)).strip() if is_admin else room_pw
+
     new_state = {
         "products": data.get("products", []),
         "rates": data.get("rates", current.get("rates", {})),
         "feeChecked": bool(data.get("feeChecked", False)),
         "shipping": float(data.get("shipping", 0)),
         "locked": new_locked,
+        "allowedEditors": new_allowed,
+        "roomPassword": new_rpw,
         "updatedAt": int(time.time() * 1000)
     }
     save_room_state(room_id, new_state)
