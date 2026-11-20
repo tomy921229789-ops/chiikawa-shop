@@ -320,12 +320,13 @@ HTML_TEMPLATE = r"""
     table { width: 100%; border-collapse: collapse; }
     th, td { padding: 9px 8px; border-bottom: 1px solid #ffe5ec; text-align: left; vertical-align: middle; }
     th { background: rgba(255, 240, 243, 0.95); font-size: 12px; color: #5c4742; font-weight: 800; white-space: nowrap; }
+    tr.row-other { background: rgba(245, 240, 242, 0.55); }
     .thumb-box { display: flex; flex-direction: column; align-items: center; gap: 3px; }
     .thumb { width: 68px; height: 68px; object-fit: cover; border-radius: 10px; border: 2px solid #ffe5ec; background: #fff; }
     .btn-img { font-size: 11px; padding: 2px 7px; background: #ffe5ec; color: #5c4742; box-shadow: none; }
     .btn-img:hover { background: #ffb3c6; color: #fff; }
     .title-input { width: 100%; min-width: 150px; padding: 4px 6px; border: 1px solid transparent; border-radius: 8px; font-size: 13px; background: transparent; color: #5c4742; font-weight: 600; }
-    .title-input:hover, .title-input:focus { border-color: #ffb3c6; background: #fff; outline: none; }
+    .title-input:hover:not(:disabled), .title-input:focus { border-color: #ffb3c6; background: #fff; outline: none; }
     .spec-stack { display: flex; flex-direction: column; gap: 5px; }
     .spec-input, .spec-select {
       width: 145px;
@@ -346,7 +347,7 @@ HTML_TEMPLATE = r"""
       background: #fff8fa;
     }
     .buyer-input { width: 68px; padding: 5px; border: 1px solid #ffb3c6; border-radius: 8px; font-size: 12px; color: #5c4742; font-weight: 700; text-align: center; background: #fff0f3; }
-    .buyer-input:disabled { background: #f3ecee; border-color: #e2d5d8; color: #6e5a55; cursor: not-allowed; }
+    input:disabled, select:disabled { background: #f3ecee !important; border-color: #e2d5d8 !important; color: #7d6b66 !important; cursor: not-allowed; }
     .curr-select { padding: 4px 5px; border: 1px solid #ffb3c6; border-radius: 8px; font-size: 12px; font-weight: bold; background: #fff; color: #5c4742; }
     .price-input { width: 82px; padding: 5px; border: 1px solid #ffb3c6; border-radius: 8px; text-align: right; font-size: 13px; color: #5c4742; }
     .qty-input { width: 46px; padding: 5px; border: 1px solid #ffb3c6; border-radius: 8px; text-align: center; font-size: 13px; color: #5c4742; }
@@ -357,13 +358,12 @@ HTML_TEMPLATE = r"""
     .link-sm:hover { text-decoration: underline; }
     .status { font-size: 12px; color: #5c4742; margin-left: auto; font-weight: 700; }
 
-    /* 入房密碼遮罩 */
     .pw-overlay {
       position: fixed;
       inset: 0;
       z-index: 999;
-      background: rgba(92, 71, 66, 0.75);
-      backdrop-filter: blur(8px);
+      background: rgba(92, 71, 66, 0.82);
+      backdrop-filter: blur(10px);
       display: none;
       align-items: center;
       justify-content: center;
@@ -393,7 +393,6 @@ HTML_TEMPLATE = r"""
   </style>
 </head>
 <body>
-  <!-- 入房密碼視窗 -->
   <div id="pwOverlay" class="pw-overlay">
     <div class="pw-box">
       <h2>🔐 此房間設有入房密碼</h2>
@@ -428,13 +427,12 @@ HTML_TEMPLATE = r"""
       <div class="online-box" id="onlineBox">🟢 目前在線：讀取中...</div>
     </div>
 
-    <!-- 團主專屬控制台 -->
     <div id="adminPanel" class="admin-panel">
       <div style="color:#ffd166; font-size:14px;">👑 團主權限與房間控制台（僅團主可見）</div>
       <div class="admin-row">
         <button id="lockToggleBtn" onclick="toggleLock()"></button>
         <span>｜ 個別授權名單：</span>
-        <input type="text" id="allowedEditorsInput" placeholder="例：小明, 小美" style="width:200px;">
+        <input type="text" id="allowedEditorsInput" placeholder="例：小明, 小美" style="width:190px;">
         <span>｜ 入房密碼：</span>
         <input type="text" id="roomPwSettingInput" placeholder="留空代表免密碼" style="width:130px;">
         <button class="btn-sm btn-rate" onclick="saveAdminSettings()">💾 套用設定</button>
@@ -444,35 +442,35 @@ HTML_TEMPLATE = r"""
     <div id="lockBanner" class="lock-banner"></div>
 
     <div class="card">
-      <textarea id="urlInput" placeholder="貼上各國商品網址（韓、日、中、台、美、澳皆可，一行一個，會自動帶入你的名字與規格庫存）..."></textarea>
+      <textarea id="urlInput" placeholder="貼上各國商品網址（韓、日、中、台、美、澳皆可，一行一個；一般成員僅能編輯自己的商品）..."></textarea>
       <div class="controls">
         <button id="fetchBtn" class="edit-only" onclick="fetchProducts()">✨ 抓取並加入清單</button>
         <button class="btn-add edit-only" onclick="addManualRow()">+ 手動新增</button>
         <button class="btn-line" onclick="copyLineText()">📋 複製 LINE 報價</button>
         <button id="exportBtn" class="btn-export" onclick="exportExcel()">📊 匯出含圖 Excel</button>
-        <button class="btn-rate edit-only" onclick="loadLiveRates()">🔄 更新匯率</button>
-        <button class="btn-clear edit-only" onclick="clearAll()">🗑️ 清空</button>
+        <button class="btn-rate admin-only" onclick="loadLiveRates()">🔄 更新匯率</button>
+        <button class="btn-clear admin-only" onclick="clearAll()">🗑️ 清空</button>
         <span id="statusText" class="status">準備就緒 ✨</span>
       </div>
 
       <div class="rates-bar">
-        <div class="rate-item"><span>🇰🇷 KRW</span><input type="number" class="edit-only" id="rate-KRW" value="0.0235" step="0.0005" onchange="pushState()"></div>
-        <div class="rate-item"><span>🇯🇵 JPY</span><input type="number" class="edit-only" id="rate-JPY" value="0.215" step="0.005" onchange="pushState()"></div>
-        <div class="rate-item"><span>🇨🇳 CNY</span><input type="number" class="edit-only" id="rate-CNY" value="4.50" step="0.05" onchange="pushState()"></div>
-        <div class="rate-item"><span>🇺🇸 USD</span><input type="number" class="edit-only" id="rate-USD" value="32.5" step="0.1" onchange="pushState()"></div>
-        <div class="rate-item"><span>🇦🇺 AUD</span><input type="number" class="edit-only" id="rate-AUD" value="21.2" step="0.1" onchange="pushState()"></div>
+        <div class="rate-item"><span>🇰🇷 KRW</span><input type="number" class="admin-only" id="rate-KRW" value="0.0235" step="0.0005" onchange="pushState()"></div>
+        <div class="rate-item"><span>🇯🇵 JPY</span><input type="number" class="admin-only" id="rate-JPY" value="0.215" step="0.005" onchange="pushState()"></div>
+        <div class="rate-item"><span>🇨🇳 CNY</span><input type="number" class="admin-only" id="rate-CNY" value="4.50" step="0.05" onchange="pushState()"></div>
+        <div class="rate-item"><span>🇺🇸 USD</span><input type="number" class="admin-only" id="rate-USD" value="32.5" step="0.1" onchange="pushState()"></div>
+        <div class="rate-item"><span>🇦🇺 AUD</span><input type="number" class="admin-only" id="rate-AUD" value="21.2" step="0.1" onchange="pushState()"></div>
         <div class="rate-item"><span>🇹🇼 TWD</span><input type="number" id="rate-TWD" value="1" disabled></div>
       </div>
 
       <div class="extra-bar">
         <label class="extra-item" style="cursor:pointer;">
-          <input type="checkbox" class="edit-only" id="feeCheck" onchange="pushState()">
+          <input type="checkbox" class="admin-only" id="feeCheck" onchange="pushState()">
           <span>💳 加上 1.5% 海外刷卡手續費</span>
         </label>
         <div class="extra-item">
           <span>✈️ 國際運費總計 NT$</span>
-          <input type="number" class="edit-only" id="shippingInput" value="0" min="0" step="10" onchange="pushState()">
-          <span style="font-size:12px; color:#888;">(依勾選件數均分)</span>
+          <input type="number" class="admin-only" id="shippingInput" value="0" min="0" step="10" onchange="pushState()">
+          <span style="font-size:12px; color:#888;">(僅團主可調整)</span>
         </div>
       </div>
     </div>
@@ -491,7 +489,7 @@ HTML_TEMPLATE = r"""
       <table>
         <thead>
           <tr>
-            <th style="width: 32px;"><input type="checkbox" class="edit-only" id="selectAll" checked onchange="toggleAll(this)"></th>
+            <th style="width: 32px;"><input type="checkbox" class="admin-only" id="selectAll" checked onchange="toggleAll(this)"></th>
             <th style="width: 82px; text-align:center;">商品照</th>
             <th>商品名稱</th>
             <th style="width: 155px;">規格 / 顏色備註</th>
@@ -576,6 +574,12 @@ HTML_TEMPLATE = r"""
       return allowedEditors.includes(getMyName());
     }
 
+    function canEditRow(p) {
+      if (isAdmin) return true;
+      if (!canEdit()) return false;
+      return (p.buyer || "訪客") === getMyName();
+    }
+
     function applyPermissionsUI() {
       const editable = canEdit();
       const banner = document.getElementById("lockBanner");
@@ -583,9 +587,9 @@ HTML_TEMPLATE = r"""
       if (isLocked) {
         banner.style.display = "block";
         if (isAdmin) {
-          banner.innerText = `🔒 房間已鎖定：目前僅限團主與授權名單（${allowedEditors.join("、") || "無"}）可編輯`;
+          banner.innerText = `🔒 房間已鎖定：目前僅限團主與授權名單（${allowedEditors.join("、") || "無"}）可編輯各自商品`;
         } else if (editable) {
-          banner.innerText = `✨ 你已被團主個別授權編輯此房間（其他未授權成員僅供檢視）`;
+          banner.innerText = `✨ 你已被團主個別授權編輯自己的商品（其他未授權成員僅供檢視）`;
         } else {
           banner.innerText = `🔒 團主已鎖定此房間，目前為「僅供檢視」模式`;
         }
@@ -595,6 +599,7 @@ HTML_TEMPLATE = r"""
 
       document.getElementById("urlInput").disabled = !editable;
       document.querySelectorAll(".edit-only").forEach(el => { el.disabled = !editable; });
+      document.querySelectorAll(".admin-only").forEach(el => { el.disabled = !isAdmin; });
 
       const adminPanel = document.getElementById("adminPanel");
       const lockBtn = document.getElementById("lockToggleBtn");
@@ -627,8 +632,9 @@ HTML_TEMPLATE = r"""
         if (confirm("要登出團主模式嗎？")) {
           isAdmin = false;
           adminPin = "";
+          sessionStorage.removeItem("chiikawa_rpw_" + currentRoom);
           applyPermissionsUI();
-          renderTable();
+          await pullState(true);
         }
         return;
       }
@@ -666,7 +672,8 @@ HTML_TEMPLATE = r"""
       roomPasswordSetting = document.getElementById("roomPwSettingInput").value.trim();
       await pushState();
       applyPermissionsUI();
-      document.getElementById("statusText").innerText = "💾 已套用授權名單與入房密碼！";
+      const pwMsg = roomPasswordSetting ? `密碼已設為「${roomPasswordSetting}」` : "已取消入房密碼";
+      document.getElementById("statusText").innerText = `💾 已套用設定（${pwMsg}）！`;
     }
 
     async function pullState(force = false) {
@@ -750,7 +757,12 @@ HTML_TEMPLATE = r"""
         const data = await res.json();
         if (data.ok) {
           lastUpdatedAt = data.updatedAt;
-          recalculate();
+          if (Array.isArray(data.products)) {
+            products = data.products;
+            renderTable();
+          } else {
+            recalculate();
+          }
         } else if (data.error) {
           alert(data.error);
           pullState(true);
@@ -759,7 +771,7 @@ HTML_TEMPLATE = r"""
     }
 
     async function loadLiveRates() {
-      if (!canEdit()) return;
+      if (!isAdmin) return;
       const status = document.getElementById("statusText");
       status.innerText = "正在抓取今日最新匯率...";
       try {
@@ -837,13 +849,11 @@ HTML_TEMPLATE = r"""
             const defaultSpec = (it.options && it.options.length > 0) ? it.options[0].label : "";
             products.push({ ...it, spec: defaultSpec, note: "", buyer: myName, qty: 1, checked: true });
             added++;
-            renderTable();
             await pushState();
           }
         } catch {
           products.push({ url: url, title: "抓取逾時或受阻，請手動補填", img: "", price: 0, currency: "TWD", options: [], spec: "", note: "", buyer: myName, qty: 1, checked: true });
           added++;
-          renderTable();
           await pushState();
         }
       }
@@ -851,40 +861,36 @@ HTML_TEMPLATE = r"""
       document.getElementById("urlInput").value = "";
       btn.disabled = false;
       btn.innerText = "✨ 抓取並加入清單";
-      status.innerText = `✨ 已為「${myName}」新增 ${added} 件商品並鎖定買家`;
+      status.innerText = `✨ 已為「${myName}」新增 ${added} 件商品`;
       isEditingNow = false;
     }
 
     async function addManualRow() {
       if (!canEdit()) return;
       products.push({ url: "", title: "手動新增商品", img: "", price: 0, currency: "TWD", options: [], spec: "", note: "", buyer: getMyName(), qty: 1, checked: true });
-      renderTable();
       await pushState();
     }
 
     async function editImage(idx) {
-      if (!canEdit()) return;
+      if (!canEditRow(products[idx])) return;
       const newUrl = prompt("請貼上商品圖片網址 (右鍵複製圖片位址)：", products[idx].img || "");
       if (newUrl !== null) {
         products[idx].img = newUrl.trim();
-        renderTable();
         await pushState();
       }
     }
 
     async function deleteRow(idx) {
-      if (!canEdit()) return;
+      if (!canEditRow(products[idx])) return;
       products.splice(idx, 1);
-      renderTable();
       await pushState();
     }
 
     async function clearAll() {
-      if (!canEdit() || products.length === 0) return;
+      if (!isAdmin || products.length === 0) return;
       if (confirm(`確定要清空「${currentRoom}」房間的所有商品嗎？`)) {
         products = [];
         document.getElementById("shippingInput").value = 0;
-        renderTable();
         await pushState();
         document.getElementById("statusText").innerText = "已清空此房間清單";
       }
@@ -917,9 +923,6 @@ HTML_TEMPLATE = r"""
 
     function renderTable() {
       const tbody = document.getElementById("productTable");
-      const editable = canEdit();
-      const dis = editable ? "" : "disabled";
-      // 買家欄：送出後只有團主能改
       const buyerDis = isAdmin ? "" : "disabled";
 
       if (products.length === 0) {
@@ -928,38 +931,44 @@ HTML_TEMPLATE = r"""
         return;
       }
 
-      tbody.innerHTML = products.map((p, idx) => `
-        <tr>
-          <td><input type="checkbox" class="item-check" data-idx="${idx}" ${p.checked !== false ? 'checked' : ''} ${dis} onchange="syncAndPush(${idx})"></td>
+      tbody.innerHTML = products.map((p, idx) => {
+        const rowEditable = canEditRow(p);
+        const rowDis = rowEditable ? "" : "disabled";
+        const rowClass = rowEditable ? "" : "row-other";
+
+        return `
+        <tr class="${rowClass}">
+          <td><input type="checkbox" class="item-check" data-idx="${idx}" ${p.checked !== false ? 'checked' : ''} ${rowDis} onchange="syncAndPush(${idx})"></td>
           <td>
             <div class="thumb-box">
               ${p.img ? `<a href="${p.url || p.img}" target="_blank"><img class="thumb" src="${p.img}" alt=""></a>` : '<div class="thumb" style="display:flex;align-items:center;justify-content:center;font-size:11px;color:#aaa;">無圖片</div>'}
-              ${editable ? `<button class="btn-img" onclick="editImage(${idx})">換圖</button>` : ''}
+              ${rowEditable ? `<button class="btn-img" onclick="editImage(${idx})">換圖</button>` : ''}
             </div>
           </td>
           <td>
-            <input type="text" class="title-input" id="title-${idx}" value="${escapeHtml(p.title)}" ${dis} onfocus="isEditingNow=true" onblur="isEditingNow=false;syncAndPush(${idx})">
+            <input type="text" class="title-input" id="title-${idx}" value="${escapeHtml(p.title)}" ${rowDis} onfocus="isEditingNow=true" onblur="isEditingNow=false;syncAndPush(${idx})">
             ${p.url ? `<a class="link-sm" href="${p.url}" target="_blank">開啟原網頁 ↗</a>` : ''}
           </td>
-          <td>${renderSpecCell(p, idx, dis)}</td>
+          <td>${renderSpecCell(p, idx, rowDis)}</td>
           <td><input type="text" class="buyer-input" id="buyer-${idx}" value="${escapeHtml(p.buyer || '訪客')}" ${buyerDis} title="${isAdmin ? '團主可修改買家' : '買家已鎖定，僅團主可修改'}" onfocus="isEditingNow=true" onblur="isEditingNow=false;syncAndPush(${idx})"></td>
           <td>
-            <select class="curr-select" id="curr-${idx}" ${dis} onchange="syncAndPush(${idx})">
+            <select class="curr-select" id="curr-${idx}" ${rowDis} onchange="syncAndPush(${idx})">
               ${CURRENCIES.map(c => `<option value="${c}" ${p.currency === c ? 'selected' : ''}>${c}</option>`).join("")}
             </select>
           </td>
-          <td><input type="number" class="price-input" id="price-${idx}" value="${p.price}" step="any" min="0" ${dis} onfocus="isEditingNow=true" onblur="isEditingNow=false;syncAndPush(${idx})"></td>
+          <td><input type="number" class="price-input" id="price-${idx}" value="${p.price}" step="any" min="0" ${rowDis} onfocus="isEditingNow=true" onblur="isEditingNow=false;syncAndPush(${idx})"></td>
           <td class="twd-price" id="twd-${idx}">NT$0</td>
-          <td><input type="number" class="qty-input" id="qty-${idx}" value="${p.qty || 1}" min="1" ${dis} onchange="syncAndPush(${idx})"></td>
-          <td>${editable ? `<button class="btn-del" title="刪除" onclick="deleteRow(${idx})">✕</button>` : ''}</td>
+          <td><input type="number" class="qty-input" id="qty-${idx}" value="${p.qty || 1}" min="1" ${rowDis} onchange="syncAndPush(${idx})"></td>
+          <td>${rowEditable ? `<button class="btn-del" title="刪除" onclick="deleteRow(${idx})">✕</button>` : ''}</td>
         </tr>
-      `).join("");
+      `;
+      }).join("");
 
       recalculate();
     }
 
     async function syncAndPush(idx) {
-      if (!canEdit()) return;
+      if (!canEditRow(products[idx])) return;
       const cb = document.querySelector(`.item-check[data-idx="${idx}"]`);
       if (!cb) return;
       products[idx].checked = cb.checked;
@@ -973,15 +982,13 @@ HTML_TEMPLATE = r"""
       products[idx].currency = document.getElementById(`curr-${idx}`).value;
       products[idx].price = parseFloat(document.getElementById(`price-${idx}`).value) || 0;
       products[idx].qty = parseInt(document.getElementById(`qty-${idx}`).value) || 1;
-      recalculate();
       await pushState();
     }
 
     async function toggleAll(master) {
-      if (!canEdit()) return;
+      if (!isAdmin) return;
       products.forEach(p => p.checked = master.checked);
       document.querySelectorAll(".item-check").forEach(cb => cb.checked = master.checked);
-      recalculate();
       await pushState();
     }
 
@@ -1223,7 +1230,6 @@ def api_state():
             if isinstance(info, dict) and now - info.get("ts", 0) <= 18:
                 online_names.append(info.get("name", "訪客"))
 
-        # 非團主不回傳房間密碼明文
         if not is_admin:
             st.pop("roomPassword", None)
 
@@ -1239,7 +1245,7 @@ def api_state():
     current = get_room_bundle(room_id)["state"]
     req_pin = str(data.get("adminPin", "")).strip()
     is_admin = (req_pin == ADMIN_PIN)
-    user_name = str(data.get("userName", "")).strip()
+    user_name = (str(data.get("userName", "")).strip() or "訪客")
     rpw = str(data.get("rpw", "")).strip()
 
     room_pw = str(current.get("roomPassword", "")).strip()
@@ -1250,22 +1256,39 @@ def api_state():
     if current.get("locked") and not is_admin and user_name not in allowed_list:
         return jsonify({"ok": False, "error": "團主已鎖定此房間，你目前沒有編輯權限！"}), 403
 
-    new_locked = bool(data.get("locked", current.get("locked", False))) if is_admin else bool(current.get("locked", False))
-    new_allowed = data.get("allowedEditors", allowed_list) if is_admin else allowed_list
-    new_rpw = str(data.get("roomPassword", room_pw)).strip() if is_admin else room_pw
+    incoming_products = data.get("products", [])
+    if is_admin:
+        merged_products = incoming_products
+        new_rates = data.get("rates", current.get("rates", {}))
+        new_fee = bool(data.get("feeChecked", False))
+        new_shipping = float(data.get("shipping", 0))
+        new_locked = bool(data.get("locked", current.get("locked", False)))
+        new_allowed = data.get("allowedEditors", allowed_list)
+        new_rpw = str(data.get("roomPassword", room_pw)).strip()
+    else:
+        # 非團主：只允許更新「買家是自己」的商品，其他人商品強制保留原樣
+        other_items = [p for p in (current.get("products") or []) if (p.get("buyer") or "訪客") != user_name]
+        my_items = [p for p in incoming_products if (p.get("buyer") or "訪客") == user_name]
+        merged_products = other_items + my_items
+        new_rates = current.get("rates", {})
+        new_fee = bool(current.get("feeChecked", False))
+        new_shipping = float(current.get("shipping", 0))
+        new_locked = bool(current.get("locked", False))
+        new_allowed = allowed_list
+        new_rpw = room_pw
 
     new_state = {
-        "products": data.get("products", []),
-        "rates": data.get("rates", current.get("rates", {})),
-        "feeChecked": bool(data.get("feeChecked", False)),
-        "shipping": float(data.get("shipping", 0)),
+        "products": merged_products,
+        "rates": new_rates,
+        "feeChecked": new_fee,
+        "shipping": new_shipping,
         "locked": new_locked,
         "allowedEditors": new_allowed,
         "roomPassword": new_rpw,
         "updatedAt": int(time.time() * 1000)
     }
     save_room_state(room_id, new_state)
-    return jsonify({"ok": True, "updatedAt": new_state["updatedAt"]})
+    return jsonify({"ok": True, "updatedAt": new_state["updatedAt"], "products": merged_products})
 
 @app.route("/api/rates")
 def api_rates():
