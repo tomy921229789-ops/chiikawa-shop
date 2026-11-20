@@ -2,6 +2,7 @@ import io
 import os
 import re
 import json
+import time
 import threading
 import webbrowser
 import requests
@@ -15,18 +16,31 @@ from flask import Flask, request, jsonify, render_template_string, send_file
 app = Flask(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+FIREBASE_URL = os.environ.get("FIREBASE_URL", "").strip().rstrip("/")
+ADMIN_PIN = os.environ.get("ADMIN_PIN", "1234").strip()
+
+# 若尚未設定 Firebase，暫存於記憶體
+LOCAL_STATE = {
+    "products": [],
+    "rates": {"KRW": 0.0235, "JPY": 0.215, "CNY": 4.50, "USD": 32.5, "AUD": 21.2, "TWD": 1},
+    "feeChecked": False,
+    "shipping": 0,
+    "locked": False,
+    "updatedAt": 0
+}
+
 HTML_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>吉伊卡哇跨國團購神器 🛒</title>
+  <title>吉伊卡哇多人團購神器 🛒</title>
   <style>
     * { box-sizing: border-box; font-family: "Nunito", "Noto Sans TC", -apple-system, BlinkMacSystemFont, sans-serif; }
     body {
       margin: 0;
-      padding: 24px 16px 60px;
+      padding: 20px 14px 60px;
       color: #5c4742;
       background-image: url('/bg.jpg');
       background-size: cover;
@@ -34,18 +48,59 @@ HTML_TEMPLATE = r"""
       background-attachment: fixed;
       min-height: 100vh;
     }
-    .container { max-width: 1220px; margin: 0 auto; }
+    .container { max-width: 1280px; margin: 0 auto; }
+    .top-bar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
     .header-title {
       display: inline-block;
       background: rgba(255, 255, 255, 0.92);
-      padding: 10px 22px;
+      padding: 8px 20px;
       border-radius: 50px;
-      font-size: 22px;
+      font-size: 20px;
       font-weight: 800;
       color: #5c4742;
       border: 3px solid #ffb3c6;
       box-shadow: 0 4px 12px rgba(255, 143, 171, 0.25);
-      margin: 0 0 16px 0;
+      margin: 0;
+    }
+    .user-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      background: rgba(255, 255, 255, 0.92);
+      padding: 6px 14px;
+      border-radius: 50px;
+      border: 2px solid #ffb3c6;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .user-bar input {
+      width: 86px;
+      padding: 4px 8px;
+      border: 1px solid #ffb3c6;
+      border-radius: 10px;
+      font-weight: 700;
+      color: #5c4742;
+      text-align: center;
+    }
+    .lock-banner {
+      background: #ffccd5;
+      color: #800f2f;
+      border: 2px solid #ff8fab;
+      border-radius: 14px;
+      padding: 10px 16px;
+      margin-bottom: 14px;
+      font-size: 14px;
+      font-weight: 800;
+      text-align: center;
+      display: none;
     }
     .card {
       background: rgba(255, 255, 255, 0.9);
@@ -53,14 +108,14 @@ HTML_TEMPLATE = r"""
       -webkit-backdrop-filter: blur(10px);
       border: 2px solid rgba(255, 179, 198, 0.75);
       border-radius: 20px;
-      padding: 18px 20px;
+      padding: 16px 18px;
       box-shadow: 0 8px 24px rgba(92, 71, 66, 0.1);
-      margin-bottom: 16px;
+      margin-bottom: 14px;
     }
     textarea {
       width: 100%;
-      height: 95px;
-      padding: 12px;
+      height: 88px;
+      padding: 11px;
       border: 2px solid #ffe5ec;
       border-radius: 14px;
       font-size: 13px;
@@ -70,12 +125,12 @@ HTML_TEMPLATE = r"""
       outline: none;
     }
     textarea:focus { border-color: #ff8fab; }
-    .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+    .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
     button {
       background: #ff8fab;
       color: #fff;
       border: none;
-      padding: 9px 15px;
+      padding: 8px 14px;
       border-radius: 50px;
       cursor: pointer;
       font-size: 13px;
@@ -84,7 +139,7 @@ HTML_TEMPLATE = r"""
       transition: transform 0.1s, background 0.2s;
     }
     button:hover { background: #fb6f92; transform: translateY(-1px); }
-    button:disabled { background: #ccc; box-shadow: none; cursor: not-allowed; }
+    button:disabled { background: #ccc; box-shadow: none; cursor: not-allowed; transform: none; }
     .btn-add { background: #8ecae6; box-shadow: 0 3px 8px rgba(142, 202, 230, 0.4); }
     .btn-add:hover { background: #219ebc; }
     .btn-line { background: #06c755; box-shadow: 0 3px 8px rgba(6, 199, 85, 0.35); }
@@ -95,13 +150,16 @@ HTML_TEMPLATE = r"""
     .btn-rate:hover { background: #f4be49; }
     .btn-clear { background: #e5989b; }
     .btn-clear:hover { background: #d6686e; }
+    .btn-admin { background: #5c4742; color: #ffd166; padding: 6px 12px; font-size: 12px; }
+    .btn-lock-on { background: #e63946; padding: 6px 12px; font-size: 12px; }
+    .btn-lock-off { background: #2a9d8f; padding: 6px 12px; font-size: 12px; }
 
     .rates-bar, .extra-bar {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
-      margin-top: 12px;
-      padding-top: 12px;
+      margin-top: 10px;
+      padding-top: 10px;
       border-top: 2px dashed #ffe5ec;
       align-items: center;
     }
@@ -110,15 +168,15 @@ HTML_TEMPLATE = r"""
       align-items: center;
       gap: 5px;
       background: #fff0f3;
-      padding: 5px 11px;
+      padding: 4px 10px;
       border-radius: 50px;
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 700;
       border: 1px solid #ffccd5;
     }
     .rate-item input[type="number"] {
-      width: 66px;
-      padding: 3px 5px;
+      width: 62px;
+      padding: 2px 4px;
       border: 1px solid #ffb3c6;
       border-radius: 8px;
       text-align: right;
@@ -131,15 +189,15 @@ HTML_TEMPLATE = r"""
       align-items: center;
       gap: 6px;
       background: #fef9ef;
-      padding: 6px 12px;
+      padding: 5px 12px;
       border-radius: 50px;
       font-size: 13px;
       font-weight: 700;
       border: 1px solid #ffd166;
     }
     .extra-item input[type="number"] {
-      width: 78px;
-      padding: 3px 6px;
+      width: 74px;
+      padding: 2px 5px;
       border: 1px solid #f4be49;
       border-radius: 8px;
       text-align: right;
@@ -158,29 +216,24 @@ HTML_TEMPLATE = r"""
       background: rgba(92, 71, 66, 0.95);
       backdrop-filter: blur(8px);
       color: #fff;
-      padding: 13px 22px;
+      padding: 12px 22px;
       border-radius: 50px;
-      margin-bottom: 16px;
+      margin-bottom: 14px;
       border: 2px solid #ffb3c6;
       box-shadow: 0 6px 20px rgba(92, 71, 66, 0.25);
     }
-    .summary strong { font-size: 21px; color: #ffd166; margin-left: 4px; }
-    .split-box {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: center;
-    }
+    .summary strong { font-size: 20px; color: #ffd166; margin-left: 4px; }
+    .split-box { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     .buyer-pill {
       background: #fff0f3;
       border: 2px solid #ffb3c6;
       border-radius: 14px;
-      padding: 8px 14px;
+      padding: 6px 12px;
       font-size: 13px;
       font-weight: 700;
       color: #5c4742;
     }
-    .buyer-pill span { color: #fb6f92; font-size: 16px; margin-left: 6px; }
+    .buyer-pill span { color: #fb6f92; font-size: 15px; margin-left: 5px; }
     .table-wrap {
       background: rgba(255, 255, 255, 0.92);
       backdrop-filter: blur(10px);
@@ -190,9 +243,1010 @@ HTML_TEMPLATE = r"""
       box-shadow: 0 8px 24px rgba(92, 71, 66, 0.1);
     }
     table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 10px; border-bottom: 1px solid #ffe5ec; text-align: left; vertical-align: middle; }
-    th { background: rgba(255, 240, 243, 0.95); font-size: 13px; color: #5c4742; font-weight: 800; white-space: nowrap; }
-    .thumb-box { display: flex; flex-direction: column; align-items: center; gap: 4px; }
-    .thumb { width: 72px; height: 72px; object-fit: cover; border-radius: 10px; border: 2px solid #ffe5ec; background: #fff; }
-    .btn-img { font-size: 11px; padding: 2px 8px; background: #ffe5ec; color: #5c4742; box-shadow: none; }
-    .
+    th, td { padding: 9px 8px; border-bottom: 1px solid #ffe5ec; text-align: left; vertical-align: middle; }
+    th { background: rgba(255, 240, 243, 0.95); font-size: 12px; color: #5c4742; font-weight: 800; white-space: nowrap; }
+    .thumb-box { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+    .thumb { width: 68px; height: 68px; object-fit: cover; border-radius: 10px; border: 2px solid #ffe5ec; background: #fff; }
+    .btn-img { font-size: 11px; padding: 2px 7px; background: #ffe5ec; color: #5c4742; box-shadow: none; }
+    .btn-img:hover { background: #ffb3c6; color: #fff; }
+    .title-input { width: 100%; min-width: 150px; padding: 4px 6px; border: 1px solid transparent; border-radius: 8px; font-size: 13px; background: transparent; color: #5c4742; font-weight: 600; }
+    .title-input:hover, .title-input:focus { border-color: #ffb3c6; background: #fff; outline: none; }
+    .spec-input, .spec-select {
+      width: 135px;
+      padding: 5px 6px;
+      border: 1px solid #ffb3c6;
+      border-radius: 8px;
+      font-size: 12px;
+      color: #5c4742;
+      background: #fff;
+    }
+    .buyer-input { width: 68px; padding: 5px; border: 1px solid #ffb3c6; border-radius: 8px; font-size: 12px; color: #5c4742; font-weight: 700; text-align: center; background: #fff0f3; }
+    .curr-select { padding: 4px 5px; border: 1px solid #ffb3c6; border-radius: 8px; font-size: 12px; font-weight: bold; background: #fff; color: #5c4742; }
+    .price-input { width: 82px; padding: 5px; border: 1px solid #ffb3c6; border-radius: 8px; text-align: right; font-size: 13px; color: #5c4742; }
+    .qty-input { width: 46px; padding: 5px; border: 1px solid #ffb3c6; border-radius: 8px; text-align: center; font-size: 13px; color: #5c4742; }
+    .twd-price { font-weight: 800; color: #fb6f92; white-space: nowrap; font-size: 13px; }
+    .btn-del { background: transparent; color: #bbb; box-shadow: none; padding: 3px 6px; font-size: 14px; }
+    .btn-del:hover { background: #ffe5ec; color: #fb6f92; }
+    .link-sm { font-size: 11px; color: #219ebc; text-decoration: none; display: inline-block; margin-top: 2px; font-weight: 600; }
+    .link-sm:hover { text-decoration: underline; }
+    .status { font-size: 12px; color: #5c4742; margin-left: auto; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="top-bar">
+      <h1 class="header-title">🛍️ 吉伊卡哇多人團購神器</h1>
+      <div class="user-bar">
+        <span>👤 你的名字：</span>
+        <input type="text" id="myNameInput" placeholder="輸入暱稱" oninput="saveMyName()">
+        <span id="syncBadge" style="font-size:12px; color:#2a9d8f;">☁️ 連線中...</span>
+        <button id="adminBtn" class="btn-admin" onclick="toggleAdminLogin()">👑 團主管理</button>
+        <button id="lockToggleBtn" style="display:none;" onclick="toggleLock()"></button>
+      </div>
+    </div>
+
+    <div id="lockBanner" class="lock-banner">
+      🔒 團主已鎖定結單，目前為「僅供檢視」模式（無法新增或修改商品）
+    </div>
+
+    <div class="card">
+      <textarea id="urlInput" placeholder="貼上各國商品網址（韓、日、中、台、美、澳皆可，一行一個，會自動帶入你的名字與規格庫存）..."></textarea>
+      <div class="controls">
+        <button id="fetchBtn" class="edit-only" onclick="fetchProducts()">✨ 抓取並加入清單</button>
+        <button class="btn-add edit-only" onclick="addManualRow()">+ 手動新增</button>
+        <button class="btn-line" onclick="copyLineText()">📋 複製 LINE 報價</button>
+        <button id="exportBtn" class="btn-export" onclick="exportExcel()">📊 匯出含圖 Excel</button>
+        <button class="btn-rate edit-only" onclick="loadLiveRates()">🔄 更新匯率</button>
+        <button class="btn-clear edit-only" onclick="clearAll()">🗑️ 清空</button>
+        <span id="statusText" class="status">準備就緒 ✨</span>
+      </div>
+
+      <div class="rates-bar">
+        <div class="rate-item"><span>🇰🇷 KRW</span><input type="number" class="edit-only" id="rate-KRW" value="0.0235" step="0.0005" onchange="pushState()"></div>
+        <div class="rate-item"><span>🇯🇵 JPY</span><input type="number" class="edit-only" id="rate-JPY" value="0.215" step="0.005" onchange="pushState()"></div>
+        <div class="rate-item"><span>🇨🇳 CNY</span><input type="number" class="edit-only" id="rate-CNY" value="4.50" step="0.05" onchange="pushState()"></div>
+        <div class="rate-item"><span>🇺🇸 USD</span><input type="number" class="edit-only" id="rate-USD" value="32.5" step="0.1" onchange="pushState()"></div>
+        <div class="rate-item"><span>🇦🇺 AUD</span><input type="number" class="edit-only" id="rate-AUD" value="21.2" step="0.1" onchange="pushState()"></div>
+        <div class="rate-item"><span>🇹🇼 TWD</span><input type="number" id="rate-TWD" value="1" disabled></div>
+      </div>
+
+      <div class="extra-bar">
+        <label class="extra-item" style="cursor:pointer;">
+          <input type="checkbox" class="edit-only" id="feeCheck" onchange="pushState()">
+          <span>💳 加上 1.5% 海外刷卡手續費</span>
+        </label>
+        <div class="extra-item">
+          <span>✈️ 國際運費總計 NT$</span>
+          <input type="number" class="edit-only" id="shippingInput" value="0" min="0" step="10" onchange="pushState()">
+          <span style="font-size:12px; color:#888;">(依勾選件數均分)</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="summary">
+      <div>已勾選 <strong id="selectedCount">0</strong> 件商品</div>
+      <div>折合台幣總計：<strong id="totalTwd">NT$0</strong></div>
+    </div>
+
+    <div class="card" id="splitCard" style="display:none; padding: 12px 18px;">
+      <div style="font-size:13px; font-weight:800; margin-bottom:8px; color:#5c4742;">👥 團購自動分帳（已含手續費與運費均分）：</div>
+      <div class="split-box" id="splitBox"></div>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 32px;"><input type="checkbox" class="edit-only" id="selectAll" checked onchange="toggleAll(this)"></th>
+            <th style="width: 82px; text-align:center;">商品照</th>
+            <th>商品名稱</th>
+            <th style="width: 145px;">規格（顏色/尺寸/庫存）</th>
+            <th style="width: 76px; text-align:center;">買家</th>
+            <th style="width: 76px;">幣別</th>
+            <th style="width: 90px;">原幣單價</th>
+            <th style="width: 90px;">台幣單價</th>
+            <th style="width: 54px; text-align:center;">數量</th>
+            <th style="width: 34px;"></th>
+          </tr>
+        </thead>
+        <tbody id="productTable">
+          <tr><td colspan="10" style="text-align:center; color:#999; padding:36px;">載入雲端清單中...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    let products = [];
+    let isLocked = false;
+    let isAdmin = false;
+    let adminPin = "";
+    let lastUpdatedAt = 0;
+    let isEditingNow = false;
+    const CURRENCIES = ["KRW", "JPY", "CNY", "USD", "AUD", "TWD"];
+
+    window.addEventListener("DOMContentLoaded", async () => {
+      const savedName = localStorage.getItem("chiikawa_my_name") || "我";
+      document.getElementById("myNameInput").value = savedName;
+      await pullState(true);
+      setInterval(() => {
+        if (!isEditingNow) pullState(false);
+      }, 4000);
+    });
+
+    function saveMyName() {
+      localStorage.setItem("chiikawa_my_name", document.getElementById("myNameInput").value.trim() || "我");
+    }
+
+    function getMyName() {
+      return document.getElementById("myNameInput").value.trim() || "我";
+    }
+
+    function canEdit() {
+      return !isLocked || isAdmin;
+    }
+
+    function applyPermissionsUI() {
+      const editable = canEdit();
+      document.getElementById("lockBanner").style.display = isLocked ? "block" : "none";
+      document.getElementById("urlInput").disabled = !editable;
+      document.querySelectorAll(".edit-only").forEach(el => { el.disabled = !editable; });
+
+      const lockBtn = document.getElementById("lockToggleBtn");
+      if (isAdmin) {
+        lockBtn.style.display = "inline-block";
+        lockBtn.className = isLocked ? "btn-lock-on" : "btn-lock-off";
+        lockBtn.innerText = isLocked ? "🔒 目前已鎖定（點此開放）" : "🔓 開放編輯中（點此鎖定）";
+        document.getElementById("adminBtn").innerText = "👑 團主已登入";
+      } else {
+        lockBtn.style.display = "none";
+        document.getElementById("adminBtn").innerText = "👑 團主管理";
+      }
+    }
+
+    async function toggleAdminLogin() {
+      if (isAdmin) {
+        if (confirm("要登出團主模式嗎？")) {
+          isAdmin = false;
+          adminPin = "";
+          applyPermissionsUI();
+          renderTable();
+        }
+        return;
+      }
+      const pin = prompt("請輸入團主密碼（預設 1234）：");
+      if (!pin) return;
+      const res = await fetch("/api/verify_admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        isAdmin = true;
+        adminPin = pin;
+        applyPermissionsUI();
+        renderTable();
+        document.getElementById("statusText").innerText = "👑 已進入團主模式，可控制鎖定權限";
+      } else {
+        alert("密碼錯誤！");
+      }
+    }
+
+    async function toggleLock() {
+      if (!isAdmin) return;
+      isLocked = !isLocked;
+      await pushState();
+      applyPermissionsUI();
+      renderTable();
+    }
+
+    async function pullState(force = false) {
+      try {
+        const res = await fetch("/api/state");
+        const data = await res.json();
+        const badge = document.getElementById("syncBadge");
+        badge.innerText = data.cloud ? "☁️ 雲端多人同步中" : "⚠️ 單機暫存（未設Firebase）";
+        badge.style.color = data.cloud ? "#2a9d8f" : "#e76f51";
+
+        const st = data.state;
+        if (!st) return;
+        if (!force && st.updatedAt && st.updatedAt <= lastUpdatedAt) return;
+
+        lastUpdatedAt = st.updatedAt || Date.now();
+        products = Array.isArray(st.products) ? st.products : [];
+        isLocked = !!st.locked;
+
+        if (st.rates) {
+          for (const [k, v] of Object.entries(st.rates)) {
+            const el = document.getElementById(`rate-${k}`);
+            if (el && k !== "TWD") el.value = v;
+          }
+        }
+        document.getElementById("feeCheck").checked = !!st.feeChecked;
+        document.getElementById("shippingInput").value = st.shipping || 0;
+
+        applyPermissionsUI();
+        renderTable();
+      } catch {}
+    }
+
+    async function pushState() {
+      if (!canEdit()) return;
+      const payload = {
+        products: products,
+        rates: getRates(),
+        feeChecked: document.getElementById("feeCheck").checked,
+        shipping: parseFloat(document.getElementById("shippingInput").value) || 0,
+        locked: isLocked,
+        adminPin: adminPin
+      };
+      try {
+        const res = await fetch("/api/state", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.ok) {
+          lastUpdatedAt = data.updatedAt;
+          recalculate();
+        } else if (data.error) {
+          alert(data.error);
+          pullState(true);
+        }
+      } catch {}
+    }
+
+    async function loadLiveRates() {
+      if (!canEdit()) return;
+      const status = document.getElementById("statusText");
+      status.innerText = "正在抓取今日最新匯率...";
+      try {
+        const res = await fetch("/api/rates");
+        const data = await res.json();
+        if (data.ok) {
+          for (const [curr, val] of Object.entries(data.rates)) {
+            const el = document.getElementById(`rate-${curr}`);
+            if (el) el.value = val;
+          }
+          await pushState();
+          status.innerText = "✅ 已套用今日即時匯率並同步";
+        }
+      } catch {
+        status.innerText = "⚠️ 匯率更新失敗";
+      }
+    }
+
+    function getRates() {
+      return {
+        KRW: parseFloat(document.getElementById("rate-KRW").value) || 0,
+        JPY: parseFloat(document.getElementById("rate-JPY").value) || 0,
+        CNY: parseFloat(document.getElementById("rate-CNY").value) || 0,
+        USD: parseFloat(document.getElementById("rate-USD").value) || 0,
+        AUD: parseFloat(document.getElementById("rate-AUD").value) || 0,
+        TWD: 1
+      };
+    }
+
+    function extractUrlsClient(rawText) {
+      const parts = rawText.split(/(?=https?:\/\/)/);
+      const seen = new Set();
+      const urls = [];
+      for (const part of parts) {
+        const m = part.trim().match(/^(https?:\/\/[^\s"'<>]+)/);
+        if (m) {
+          const clean = m[1].split("#")[0];
+          if (!seen.has(clean)) {
+            seen.add(clean);
+            urls.push(clean);
+          }
+        }
+      }
+      return urls;
+    }
+
+    async function fetchProducts() {
+      if (!canEdit()) return alert("團主已鎖定結單！");
+      const rawText = document.getElementById("urlInput").value.trim();
+      if (!rawText) return alert("請先貼上至少一個網址！");
+
+      const urlsToFetch = extractUrlsClient(rawText);
+      const btn = document.getElementById("fetchBtn");
+      const status = document.getElementById("statusText");
+      const myName = getMyName();
+      btn.disabled = true;
+      isEditingNow = true;
+
+      let added = 0;
+      for (let i = 0; i < urlsToFetch.length; i++) {
+        const url = urlsToFetch[i];
+        btn.innerText = `抓取中 (${i + 1}/${urlsToFetch.length})`;
+        status.innerText = `正在抓取第 ${i + 1} / ${urlsToFetch.length} 件商品與庫存...`;
+
+        try {
+          const res = await fetch("/api/fetch", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: url })
+          });
+          if (!res.ok) throw new Error("err");
+          const data = await res.json();
+          if (data.items && data.items.length > 0) {
+            const it = data.items[0];
+            const defaultSpec = (it.options && it.options.length > 0) ? it.options[0].label : "";
+            products.push({ ...it, spec: defaultSpec, buyer: myName, qty: 1, checked: true });
+            added++;
+            renderTable();
+            await pushState();
+          }
+        } catch {
+          products.push({ url: url, title: "抓取逾時或受阻，請手動補填", img: "", price: 0, currency: "TWD", options: [], spec: "", buyer: myName, qty: 1, checked: true });
+          added++;
+          renderTable();
+          await pushState();
+        }
+      }
+
+      document.getElementById("urlInput").value = "";
+      btn.disabled = false;
+      btn.innerText = "✨ 抓取並加入清單";
+      status.innerText = `✨ 已為「${myName}」新增 ${added} 件商品並同步`;
+      isEditingNow = false;
+    }
+
+    async function addManualRow() {
+      if (!canEdit()) return;
+      products.push({ url: "", title: "手動新增商品", img: "", price: 0, currency: "TWD", options: [], spec: "", buyer: getMyName(), qty: 1, checked: true });
+      renderTable();
+      await pushState();
+    }
+
+    async function editImage(idx) {
+      if (!canEdit()) return;
+      const newUrl = prompt("請貼上商品圖片網址 (右鍵複製圖片位址)：", products[idx].img || "");
+      if (newUrl !== null) {
+        products[idx].img = newUrl.trim();
+        renderTable();
+        await pushState();
+      }
+    }
+
+    async function deleteRow(idx) {
+      if (!canEdit()) return;
+      products.splice(idx, 1);
+      renderTable();
+      await pushState();
+    }
+
+    async function clearAll() {
+      if (!canEdit() || products.length === 0) return;
+      if (confirm("確定要清空所有人的商品清單嗎？")) {
+        products = [];
+        document.getElementById("shippingInput").value = 0;
+        renderTable();
+        await pushState();
+        document.getElementById("statusText").innerText = "已清空清單";
+      }
+    }
+
+    function escapeHtml(str) {
+      return String(str || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    function renderSpecCell(p, idx, disabledAttr) {
+      if (Array.isArray(p.options) && p.options.length > 0) {
+        const optsHtml = p.options.map(o => {
+          const tag = o.in_stock === false ? "❌ 缺貨" : "✅ 有貨";
+          const selected = p.spec === o.label ? "selected" : "";
+          return `<option value="${escapeHtml(o.label)}" ${selected}>${escapeHtml(o.label)} (${tag})</option>`;
+        }).join("");
+        return `<select class="spec-select" id="spec-${idx}" ${disabledAttr} onchange="syncAndPush(${idx})">${optsHtml}</select>`;
+      }
+      return `<input type="text" class="spec-input" id="spec-${idx}" placeholder="顏色 / 尺寸" value="${escapeHtml(p.spec || '')}" ${disabledAttr} onfocus="isEditingNow=true" onblur="isEditingNow=false;syncAndPush(${idx})">`;
+    }
+
+    function renderTable() {
+      const tbody = document.getElementById("productTable");
+      const editable = canEdit();
+      const dis = editable ? "" : "disabled";
+
+      if (products.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; color:#999; padding:36px;">目前清單是空的，輸入你的名字後貼上網址就能一起買啦 🛒</td></tr>';
+        recalculate();
+        return;
+      }
+
+      tbody.innerHTML = products.map((p, idx) => `
+        <tr>
+          <td><input type="checkbox" class="item-check" data-idx="${idx}" ${p.checked !== false ? 'checked' : ''} ${dis} onchange="syncAndPush(${idx})"></td>
+          <td>
+            <div class="thumb-box">
+              ${p.img ? `<a href="${p.url || p.img}" target="_blank"><img class="thumb" src="${p.img}" alt=""></a>` : '<div class="thumb" style="display:flex;align-items:center;justify-content:center;font-size:11px;color:#aaa;">無圖片</div>'}
+              ${editable ? `<button class="btn-img" onclick="editImage(${idx})">換圖</button>` : ''}
+            </div>
+          </td>
+          <td>
+            <input type="text" class="title-input" id="title-${idx}" value="${escapeHtml(p.title)}" ${dis} onfocus="isEditingNow=true" onblur="isEditingNow=false;syncAndPush(${idx})">
+            ${p.url ? `<a class="link-sm" href="${p.url}" target="_blank">開啟原網頁 ↗</a>` : ''}
+          </td>
+          <td>${renderSpecCell(p, idx, dis)}</td>
+          <td><input type="text" class="buyer-input" id="buyer-${idx}" value="${escapeHtml(p.buyer || '我')}" ${dis} onfocus="isEditingNow=true" onblur="isEditingNow=false;syncAndPush(${idx})"></td>
+          <td>
+            <select class="curr-select" id="curr-${idx}" ${dis} onchange="syncAndPush(${idx})">
+              ${CURRENCIES.map(c => `<option value="${c}" ${p.currency === c ? 'selected' : ''}>${c}</option>`).join("")}
+            </select>
+          </td>
+          <td><input type="number" class="price-input" id="price-${idx}" value="${p.price}" step="any" min="0" ${dis} onfocus="isEditingNow=true" onblur="isEditingNow=false;syncAndPush(${idx})"></td>
+          <td class="twd-price" id="twd-${idx}">NT$0</td>
+          <td><input type="number" class="qty-input" id="qty-${idx}" value="${p.qty || 1}" min="1" ${dis} onchange="syncAndPush(${idx})"></td>
+          <td>${editable ? `<button class="btn-del" title="刪除" onclick="deleteRow(${idx})">✕</button>` : ''}</td>
+        </tr>
+      `).join("");
+
+      recalculate();
+    }
+
+    async function syncAndPush(idx) {
+      if (!canEdit()) return;
+      const cb = document.querySelector(`.item-check[data-idx="${idx}"]`);
+      if (!cb) return;
+      products[idx].checked = cb.checked;
+      products[idx].title = document.getElementById(`title-${idx}`).value;
+      products[idx].spec = document.getElementById(`spec-${idx}`).value;
+      products[idx].buyer = document.getElementById(`buyer-${idx}`).value.trim() || "我";
+      products[idx].currency = document.getElementById(`curr-${idx}`).value;
+      products[idx].price = parseFloat(document.getElementById(`price-${idx}`).value) || 0;
+      products[idx].qty = parseInt(document.getElementById(`qty-${idx}`).value) || 1;
+      recalculate();
+      await pushState();
+    }
+
+    async function toggleAll(master) {
+      if (!canEdit()) return;
+      products.forEach(p => p.checked = master.checked);
+      document.querySelectorAll(".item-check").forEach(cb => cb.checked = master.checked);
+      recalculate();
+      await pushState();
+    }
+
+    function getBreakdown() {
+      const rates = getRates();
+      const feeMult = document.getElementById("feeCheck").checked ? 1.015 : 1;
+      const shipping = parseFloat(document.getElementById("shippingInput").value) || 0;
+
+      let totalQty = 0;
+      let totalGoodsTwd = 0;
+      const buyers = {};
+
+      products.forEach((p, idx) => {
+        const unitTwd = Math.round((p.price || 0) * (rates[p.currency] || 1) * feeMult);
+        const twdEl = document.getElementById(`twd-${idx}`);
+        if (twdEl) twdEl.innerText = `NT$${unitTwd.toLocaleString()}`;
+
+        if (p.checked !== false) {
+          const qty = p.qty || 1;
+          const buyer = p.buyer || "我";
+          totalQty += qty;
+          totalGoodsTwd += unitTwd * qty;
+
+          if (!buyers[buyer]) buyers[buyer] = { qty: 0, goodsTwd: 0, items: [] };
+          buyers[buyer].qty += qty;
+          buyers[buyer].goodsTwd += unitTwd * qty;
+          buyers[buyer].items.push({ title: p.title, spec: p.spec || "", qty, unitTwd, subTwd: unitTwd * qty });
+        }
+      });
+
+      const shippingPerItem = totalQty > 0 ? shipping / totalQty : 0;
+      for (const b of Object.values(buyers)) {
+        b.shippingShare = Math.round(shippingPerItem * b.qty);
+        b.finalTwd = b.goodsTwd + b.shippingShare;
+      }
+
+      return { totalQty, totalTwd: totalGoodsTwd + Math.round(shipping), shipping, feeChecked: feeMult > 1, buyers };
+    }
+
+    function recalculate() {
+      const { totalQty, totalTwd, buyers } = getBreakdown();
+      document.getElementById("selectedCount").innerText = totalQty;
+      document.getElementById("totalTwd").innerText = `NT$${totalTwd.toLocaleString()}`;
+
+      const splitCard = document.getElementById("splitCard");
+      const splitBox = document.getElementById("splitBox");
+      const buyerEntries = Object.entries(buyers);
+
+      if (buyerEntries.length > 0) {
+        splitCard.style.display = "block";
+        splitBox.innerHTML = buyerEntries.map(([name, info]) => `
+          <div class="buyer-pill">
+            👤 ${escapeHtml(name)} (${info.qty}件)
+            <span>NT$${info.finalTwd.toLocaleString()}</span>
+          </div>
+        `).join("");
+      } else {
+        splitCard.style.display = "none";
+      }
+    }
+
+    function copyLineText() {
+      const { totalQty, totalTwd, shipping, feeChecked, buyers } = getBreakdown();
+      if (totalQty === 0) return alert("請至少勾選一件商品！");
+
+      let lines = ["🛍️ 跨國團購結帳清單"];
+      if (feeChecked || shipping > 0) {
+        let notes = [];
+        if (feeChecked) notes.push("含1.5%刷卡費");
+        if (shipping > 0) notes.push(`運費NT$${shipping}按件均分`);
+        lines.push(`(${notes.join(" / ")})`);
+      }
+      lines.push("━━━━━━━━━━━━");
+
+      for (const [name, info] of Object.entries(buyers)) {
+        lines.push(`👤 ${name}（${info.qty}件）`);
+        info.items.forEach(it => {
+          const specStr = it.spec ? ` [${it.spec}]` : "";
+          lines.push(`• ${it.title}${specStr} x${it.qty} — NT$${it.subTwd.toLocaleString()}`);
+        });
+        if (info.shippingShare > 0) {
+          lines.push(`  ✈️ 運費分攤：NT$${info.shippingShare.toLocaleString()}`);
+        }
+        lines.push(`👉 應付小計：NT$${info.finalTwd.toLocaleString()}`);
+        lines.push("");
+      }
+
+      lines.push("━━━━━━━━━━━━");
+      lines.push(`💰 總計：NT$${totalTwd.toLocaleString()}（共 ${totalQty} 件）`);
+
+      navigator.clipboard.writeText(lines.join("\n")).then(() => {
+        document.getElementById("statusText").innerText = "📋 已複製 LINE 報價清單！";
+      }).catch(() => {
+        alert("複製失敗，請手動複製：\n\n" + lines.join("\n"));
+      });
+    }
+
+    async function exportExcel() {
+      const selectedItems = products.filter(p => p.checked !== false);
+      if (selectedItems.length === 0) return alert("請至少勾選一件商品再匯出！");
+
+      const btn = document.getElementById("exportBtn");
+      const status = document.getElementById("statusText");
+      btn.disabled = true;
+      btn.innerText = "圖片打包中...";
+      status.innerText = "正在下載商品照並產生 Excel...";
+
+      try {
+        const res = await fetch("/api/export", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            items: selectedItems,
+            rates: getRates(),
+            feeChecked: document.getElementById("feeCheck").checked,
+            shipping: parseFloat(document.getElementById("shippingInput").value) || 0
+          })
+        });
+        if (!res.ok) throw new Error("匯出失敗");
+
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "group_shopping_list.xlsx";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+        status.innerText = "📊 Excel 匯出完成！";
+      } catch (err) {
+        alert("匯出發生錯誤：" + err);
+        status.innerText = "匯出失敗";
+      } finally {
+        btn.disabled = false;
+        btn.innerText = "📊 匯出含圖 Excel";
+      }
+    }
+  </script>
+</body>
+</html>
+"""
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7,ja;q=0.6,ko;q=0.5"
+}
+
+SUPPORTED_CURRENCIES = {"KRW", "JPY", "CNY", "USD", "AUD", "TWD"}
+
+def load_cloud_state():
+    if not FIREBASE_URL:
+        return LOCAL_STATE
+    try:
+        res = requests.get(f"{FIREBASE_URL}/shop_state.json", timeout=6)
+        data = res.json()
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return LOCAL_STATE
+
+def save_cloud_state(state):
+    global LOCAL_STATE
+    LOCAL_STATE = state
+    if not FIREBASE_URL:
+        return True
+    try:
+        res = requests.put(f"{FIREBASE_URL}/shop_state.json", json=state, timeout=6)
+        return res.ok
+    except Exception:
+        return False
+
+@app.route("/bg.jpg")
+def background_image():
+    img_path = os.path.join(BASE_DIR, "123.jpg")
+    if os.path.exists(img_path):
+        return send_file(img_path, mimetype="image/jpeg")
+    return "", 404
+
+@app.route("/api/verify_admin", methods=["POST"])
+def api_verify_admin():
+    pin = str(request.json.get("pin", "")).strip()
+    return jsonify({"ok": pin == ADMIN_PIN})
+
+@app.route("/api/state", methods=["GET", "POST"])
+def api_state():
+    if request.method == "GET":
+        return jsonify({"cloud": bool(FIREBASE_URL), "state": load_cloud_state()})
+
+    current = load_cloud_state()
+    data = request.json or {}
+    req_pin = str(data.get("adminPin", "")).strip()
+    is_admin = (req_pin == ADMIN_PIN)
+
+    if current.get("locked") and not is_admin:
+        return jsonify({"ok": False, "error": "團主已鎖定結單，目前無法修改！"}), 403
+
+    new_locked = bool(data.get("locked", current.get("locked", False))) if is_admin else bool(current.get("locked", False))
+    new_state = {
+        "products": data.get("products", []),
+        "rates": data.get("rates", current.get("rates", {})),
+        "feeChecked": bool(data.get("feeChecked", False)),
+        "shipping": float(data.get("shipping", 0)),
+        "locked": new_locked,
+        "updatedAt": int(time.time() * 1000)
+    }
+    save_cloud_state(new_state)
+    return jsonify({"ok": True, "updatedAt": new_state["updatedAt"]})
+
+@app.route("/api/rates")
+def api_rates():
+    try:
+        res = requests.get("https://open.er-api.com/v6/latest/TWD", timeout=6)
+        data = res.json()
+        raw = data.get("rates", {})
+        rates = {
+            "KRW": round(1 / raw["KRW"], 4),
+            "JPY": round(1 / raw["JPY"], 3),
+            "CNY": round(1 / raw["CNY"], 2),
+            "USD": round(1 / raw["USD"], 2),
+            "AUD": round(1 / raw["AUD"], 2),
+        }
+        return jsonify({"ok": True, "rates": rates})
+    except Exception:
+        return jsonify({"ok": False})
+
+def extract_urls(raw_text):
+    parts = re.split(r'(?=https?://)', raw_text)
+    seen = set()
+    urls = []
+    for part in parts:
+        match = re.match(r'(https?://[^\s"\'<>]+)', part.strip())
+        if match:
+            clean_url = match.group(1).split('#')[0]
+            if clean_url not in seen:
+                seen.add(clean_url)
+                urls.append(clean_url)
+    return urls
+
+def guess_currency_by_url(url):
+    u = url.lower()
+    if any(k in u for k in [".jp", "rakuten.co.jp", "amazon.co.jp", "zozo.jp", "mercari.com/jp"]):
+        return "JPY"
+    if any(k in u for k in ["taobao.com", "tmall.com", "1688.com", "jd.com", ".cn"]):
+        return "CNY"
+    if any(k in u for k in [".com.au", ".au/", "amazon.com.au"]):
+        return "AUD"
+    if any(k in u for k in [".com.tw", ".tw/", "momoshop", "pchome", "shopee.tw", "pinkoi"]):
+        return "TWD"
+    if any(k in u for k in [".kr", "lostmanagementcities", "musinsa", "29cm", "wconcept"]):
+        return "KRW"
+    return "USD"
+
+def parse_json_ld(soup):
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or "")
+            items = data if isinstance(data, list) else data.get("@graph", [data])
+            for obj in items:
+                if not isinstance(obj, dict):
+                    continue
+                if obj.get("@type") in ("Product", ["Product"]):
+                    title = obj.get("name", "")
+                    img = obj.get("image", "")
+                    if isinstance(img, list) and img:
+                        img = img[0]
+                    if isinstance(img, dict):
+                        img = img.get("url", "")
+                    offers = obj.get("offers", {})
+                    if isinstance(offers, list) and offers:
+                        offers = offers[0]
+                    price = offers.get("price") or offers.get("lowPrice") or 0
+                    curr = offers.get("priceCurrency", "")
+                    return title, img, float(price) if price else 0, curr.upper()
+        except Exception:
+            continue
+    return "", "", 0, ""
+
+def parse_options_and_stock(url, html_text, soup):
+    """嘗試抓取 LMC (Cafe24) 與 Shopify 的顏色/尺寸選項與庫存"""
+    options = []
+
+    # 1. Cafe24 專屬 option_stock_data 解析 (LMC 等韓牌)
+    m = re.search(r"option_stock_data\s*=\s*'(\{.*?\})'", html_text)
+    if not m:
+        m = re.search(r'option_stock_data\s*=\s*"(\{.*?\})"', html_text)
+    if m:
+        try:
+            raw_json = m.group(1).replace(r'\"', '"').replace(r"\/", "/")
+            stock_map = json.loads(raw_json)
+            for _, info in stock_map.items():
+                if not isinstance(info, dict):
+                    continue
+                label = info.get("option_value") or info.get("option_name") or ""
+                if not label:
+                    continue
+                is_soldout = (
+                    info.get("is_selling") == "F"
+                    or info.get("stock_number") == 0
+                    or str(info.get("stock_number")) == "0"
+                    or "품절" in label
+                    or "SOLD OUT" in label.upper()
+                )
+                clean_label = re.sub(r"\s*\[?(품절|SOLD OUT)\]?", "", label, flags=re.I).strip()
+                options.append({"label": clean_label, "in_stock": not is_soldout})
+            if options:
+                return options
+        except Exception:
+            pass
+
+    # 2. Shopify 官網解析 (/products/xxx -> .json)
+    if "/products/" in url:
+        try:
+            base = url.split("?")[0].rstrip("/")
+            s_res = requests.get(f"{base}.json", headers=HEADERS, timeout=5)
+            if s_res.ok:
+                prod = s_res.json().get("product", {})
+                for v in prod.get("variants", []):
+                    title = v.get("title", "")
+                    if title and title != "Default Title":
+                        in_stock = v.get("available", True)
+                        options.append({"label": title, "in_stock": bool(in_stock)})
+                if options:
+                    return options
+        except Exception:
+            pass
+
+    # 3. 備用：解析網頁上的 <select> 規格選單
+    for sel in soup.select("select[id*='product_option'], select[name*='option']"):
+        for opt in sel.find_all("option"):
+            val = opt.get("value", "").strip()
+            txt = opt.get_text(strip=True)
+            if not val or val in ("*", "**") or any(k in txt for k in ["선택", "Select", "請選擇", "---"]):
+                continue
+            is_soldout = ("품절" in txt) or ("SOLD OUT" in txt.upper()) or opt.has_attr("disabled")
+            clean_txt = re.sub(r"\s*\[?(품절|SOLD OUT)\]?", "", txt, flags=re.I).strip()
+            options.append({"label": clean_txt, "in_stock": not is_soldout})
+        if options:
+            break
+
+    return options
+
+def extract_first_number(text):
+    m = re.search(r"[\d,]+(?:\.\d+)?", str(text))
+    if m:
+        try:
+            return float(m.group(0).replace(",", ""))
+        except ValueError:
+            return 0
+    return 0
+
+def scrape_product(url):
+    currency = guess_currency_by_url(url)
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=10)
+        res.encoding = res.apparent_encoding or 'utf-8'
+        soup = BeautifulSoup(res.text, 'html.parser')
+
+        title, img_url, ld_price, ld_curr = parse_json_ld(soup)
+        if ld_curr in SUPPORTED_CURRENCIES:
+            currency = ld_curr
+
+        if not title:
+            title_meta = soup.find("meta", property="og:title")
+            title = title_meta["content"].strip() if title_meta and title_meta.get("content") else (soup.title.string.strip() if soup.title and soup.title.string else url)
+
+        if not img_url:
+            img_meta = soup.find("meta", property="og:image")
+            img_url = img_meta["content"].strip() if img_meta and img_meta.get("content") else ""
+        if img_url.startswith("//"):
+            img_url = "https:" + img_url
+
+        curr_meta = soup.find("meta", property=re.compile(r"(product|og):price:currency"))
+        if curr_meta and curr_meta.get("content") and curr_meta["content"].upper() in SUPPORTED_CURRENCIES:
+            currency = curr_meta["content"].upper()
+
+        price_num = 0
+        sale_meta = soup.find("meta", property="product:sale_price:amount")
+        if sale_meta and sale_meta.get("content"):
+            price_num = extract_first_number(sale_meta["content"])
+
+        if not price_num:
+            sale_el = soup.select_one("#span_product_price_sale")
+            if sale_el:
+                price_num = extract_first_number(sale_el.get_text())
+
+        if not price_num:
+            sale_js = re.search(r"product_sale_price\s*=\s*['\"]?(\d+(?:\.\d+)?)['\"]?", res.text)
+            if sale_js:
+                price_num = float(sale_js.group(1))
+
+        if not price_num and ld_price:
+            price_num = ld_price
+
+        if not price_num:
+            for prop in ["product:price:amount", "og:price:amount"]:
+                m = soup.find("meta", property=prop)
+                if m and m.get("content"):
+                    price_num = extract_first_number(m["content"])
+                    if price_num:
+                        break
+
+        if not price_num:
+            price_el = soup.select_one("#span_product_price_text, .price, [itemprop='price']")
+            if price_el:
+                val = price_el.get("content") or price_el.get_text()
+                price_num = extract_first_number(val)
+
+        options = parse_options_and_stock(url, res.text, soup)
+
+        return {"url": url, "title": title, "img": img_url, "price": price_num, "currency": currency, "options": options}
+    except Exception as e:
+        return {"url": url, "title": f"抓取受阻，請手動補填 ({type(e).__name__})", "img": "", "price": 0, "currency": currency, "options": []}
+
+@app.route("/")
+def index():
+    return render_template_string(HTML_TEMPLATE)
+
+@app.route("/api/fetch", methods=["POST"])
+def api_fetch():
+    raw_text = request.json.get("text", "")
+    urls = extract_urls(raw_text)
+    items = [scrape_product(url) for url in urls]
+    return jsonify({"items": items})
+
+@app.route("/api/export", methods=["POST"])
+def api_export():
+    data = request.json
+    items = data.get("items", [])
+    rates = data.get("rates", {})
+    fee_mult = 1.015 if data.get("feeChecked") else 1.0
+    shipping = float(data.get("shipping", 0))
+
+    total_qty = sum(int(it.get("qty", 1)) for it in items)
+    shipping_per_item = shipping / total_qty if total_qty > 0 else 0
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "跨國團購清單"
+
+    col_headers = ["商品照", "買家", "商品名稱", "規格", "幣別", "原幣單價", "台幣單價", "數量", "運費分攤", "小計 (TWD)", "商品連結"]
+    ws.append(col_headers)
+
+    header_fill = PatternFill(start_color="5C4742", end_color="5C4742", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True)
+    for col_idx in range(1, len(col_headers) + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 28
+
+    col_widths = {"A": 15, "B": 10, "C": 32, "D": 16, "E": 7, "F": 11, "G": 11, "H": 7, "I": 10, "J": 12, "K": 30}
+    for col, width in col_widths.items():
+        ws.column_dimensions[col].width = width
+
+    img_buffers = []
+    grand_total = 0
+
+    for row_idx, item in enumerate(items, start=2):
+        curr = item.get("currency", "TWD")
+        rate = float(rates.get(curr, 1))
+        price = float(item.get("price", 0))
+        qty = int(item.get("qty", 1))
+        unit_twd = round(price * rate * fee_mult)
+        ship_share = round(shipping_per_item * qty)
+        subtotal_twd = unit_twd * qty + ship_share
+        grand_total += subtotal_twd
+
+        ws.row_dimensions[row_idx].height = 78
+
+        ws.cell(row=row_idx, column=2, value=item.get("buyer", "我")).alignment = Alignment(horizontal="center", vertical="center")
+        ws.cell(row=row_idx, column=3, value=item.get("title", "")).alignment = Alignment(vertical="center", wrap_text=True)
+        ws.cell(row=row_idx, column=4, value=item.get("spec", "")).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        ws.cell(row=row_idx, column=5, value=curr).alignment = Alignment(horizontal="center", vertical="center")
+
+        for col_i, val, fmt in [
+            (6, price, '#,##0.##'),
+            (7, unit_twd, '#,##0'),
+            (9, ship_share, '#,##0'),
+            (10, subtotal_twd, '#,##0')
+        ]:
+            c = ws.cell(row=row_idx, column=col_i, value=val)
+            c.number_format = fmt
+            c.alignment = Alignment(horizontal="right", vertical="center")
+
+        ws.cell(row=row_idx, column=8, value=qty).alignment = Alignment(horizontal="center", vertical="center")
+
+        url_val = item.get("url", "")
+        c_url = ws.cell(row=row_idx, column=11, value=url_val)
+        if url_val:
+            c_url.hyperlink = url_val
+            c_url.font = Font(color="0563C1", underline="single")
+        c_url.alignment = Alignment(vertical="center")
+
+        img_url = item.get("img", "")
+        if img_url:
+            try:
+                img_res = requests.get(img_url, headers=HEADERS, timeout=8)
+                pil_img = PILImage.open(io.BytesIO(img_res.content))
+                pil_img.thumbnail((95, 95))
+                buf = io.BytesIO()
+                pil_img.save(buf, format="PNG")
+                buf.seek(0)
+                img_buffers.append(buf)
+                ws.add_image(XLImage(buf), f"A{row_idx}")
+            except Exception:
+                ws.cell(row=row_idx, column=1, value="圖片載入失敗").alignment = Alignment(horizontal="center", vertical="center")
+
+    sum_row = len(items) + 2
+    ws.row_dimensions[sum_row].height = 28
+    ws.cell(row=sum_row, column=7, value="總計").font = Font(bold=True)
+    ws.cell(row=sum_row, column=7).alignment = Alignment(horizontal="right", vertical="center")
+    ws.cell(row=sum_row, column=8, value=total_qty).font = Font(bold=True)
+    ws.cell(row=sum_row, column=8).alignment = Alignment(horizontal="center", vertical="center")
+
+    s_ship = ws.cell(row=sum_row, column=9, value=round(shipping))
+    s_ship.number_format = '#,##0'
+    s_ship.font = Font(bold=True)
+    s_ship.alignment = Alignment(horizontal="right", vertical="center")
+
+    s_twd = ws.cell(row=sum_row, column=10, value=grand_total)
+    s_twd.number_format = '#,##0'
+    s_twd.font = Font(bold=True, color="FB6F92")
+    s_twd.alignment = Alignment(horizontal="right", vertical="center")
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name="group_shopping_list.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    if not os.environ.get("RENDER"):
+        threading.Timer(1.0, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
+    app.run(host="0.0.0.0", port=port, debug=False)
