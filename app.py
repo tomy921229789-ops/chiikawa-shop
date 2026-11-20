@@ -140,7 +140,7 @@ HTML_TEMPLATE = r"""
     }
     .admin-panel {
       display: none;
-      background: rgba(92, 71, 66, 0.95);
+      background: rgba(92, 71, 66, 0.96);
       color: #fff;
       border: 2px solid #ffd166;
       border-radius: 18px;
@@ -358,10 +358,9 @@ HTML_TEMPLATE = r"""
     .link-sm:hover { text-decoration: underline; }
     .status { font-size: 12px; color: #5c4742; margin-left: auto; font-weight: 700; }
 
-    .pw-overlay {
+    .modal-overlay {
       position: fixed;
       inset: 0;
-      z-index: 999;
       background: rgba(92, 71, 66, 0.82);
       backdrop-filter: blur(10px);
       display: none;
@@ -369,7 +368,7 @@ HTML_TEMPLATE = r"""
       justify-content: center;
       padding: 20px;
     }
-    .pw-box {
+    .modal-box {
       background: #fff;
       border: 3px solid #ffb3c6;
       border-radius: 24px;
@@ -379,8 +378,8 @@ HTML_TEMPLATE = r"""
       text-align: center;
       box-shadow: 0 12px 32px rgba(0,0,0,0.25);
     }
-    .pw-box h2 { margin: 0 0 10px; font-size: 18px; color: #5c4742; }
-    .pw-box input {
+    .modal-box h2 { margin: 0 0 8px; font-size: 18px; color: #5c4742; }
+    .modal-box input {
       width: 100%;
       padding: 10px 14px;
       border: 2px solid #ffb3c6;
@@ -393,8 +392,9 @@ HTML_TEMPLATE = r"""
   </style>
 </head>
 <body>
-  <div id="pwOverlay" class="pw-overlay">
-    <div class="pw-box">
+  <!-- 入房密碼視窗 (優先度最高) -->
+  <div id="pwOverlay" class="modal-overlay" style="z-index: 1000;">
+    <div class="modal-box">
       <h2>🔐 此房間設有入房密碼</h2>
       <div style="font-size:13px; color:#888;">請輸入密碼以進入「<span id="pwRoomName"></span>」</div>
       <input type="password" id="pwInput" placeholder="請輸入入房密碼" onkeydown="if(event.key==='Enter') submitRoomPassword()">
@@ -406,6 +406,17 @@ HTML_TEMPLATE = r"""
     </div>
   </div>
 
+  <!-- 首次進入強制輸入名字視窗 -->
+  <div id="nameOverlay" class="modal-overlay" style="z-index: 990;">
+    <div class="modal-box">
+      <h2>👋 請先輸入你的名字</h2>
+      <div style="font-size:13px; color:#888;">你新增的商品會自動標記此名字，且只能編輯自己的商品</div>
+      <input type="text" id="entryNameInput" placeholder="例如：小明、小美" maxlength="15" onkeydown="if(event.key==='Enter') submitEntryName()">
+      <div id="nameError" style="color:#e63946; font-size:12px; font-weight:700; min-height:18px; margin-bottom:8px;"></div>
+      <button onclick="submitEntryName()" style="width:100%; padding:10px;">✨ 確認並進入房間</button>
+    </div>
+  </div>
+
   <div class="container">
     <div class="top-bar">
       <h1 class="header-title">🛍️ 吉伊卡哇多人團購神器</h1>
@@ -414,6 +425,7 @@ HTML_TEMPLATE = r"""
         <input type="text" id="myNameInput" placeholder="輸入暱稱" oninput="saveMyName()">
         <span id="syncBadge" style="font-size:12px; color:#2a9d8f;">☁️ 連線中...</span>
         <button id="adminBtn" class="btn-admin" onclick="toggleAdminLogin()">👑 團主管理</button>
+        <button id="topLockBtn" style="display:none;" onclick="toggleLock()"></button>
       </div>
     </div>
 
@@ -427,12 +439,13 @@ HTML_TEMPLATE = r"""
       <div class="online-box" id="onlineBox">🟢 目前在線：讀取中...</div>
     </div>
 
+    <!-- 團主專屬控制台 -->
     <div id="adminPanel" class="admin-panel">
       <div style="color:#ffd166; font-size:14px;">👑 團主權限與房間控制台（僅團主可見）</div>
       <div class="admin-row">
         <button id="lockToggleBtn" onclick="toggleLock()"></button>
         <span>｜ 個別授權名單：</span>
-        <input type="text" id="allowedEditorsInput" placeholder="例：小明, 小美" style="width:190px;">
+        <input type="text" id="allowedEditorsInput" placeholder="例：小明, 小美" style="width:185px;">
         <span>｜ 入房密碼：</span>
         <input type="text" id="roomPwSettingInput" placeholder="留空代表免密碼" style="width:130px;">
         <button class="btn-sm btn-rate" onclick="saveAdminSettings()">💾 套用設定</button>
@@ -532,25 +545,51 @@ HTML_TEMPLATE = r"""
       return sessionStorage.getItem("chiikawa_rpw_" + currentRoom) || "";
     }
 
+    function getSessionName() {
+      return sessionStorage.getItem("chiikawa_session_name") || "";
+    }
+
     window.addEventListener("DOMContentLoaded", async () => {
-      const savedName = localStorage.getItem("chiikawa_my_name") || "訪客";
-      document.getElementById("myNameInput").value = savedName;
       document.getElementById("roomInput").value = currentRoom;
       document.getElementById("pwRoomName").innerText = currentRoom;
+
+      const sName = getSessionName();
+      if (sName) {
+        document.getElementById("myNameInput").value = sName;
+      } else {
+        document.getElementById("nameOverlay").style.display = "flex";
+        setTimeout(() => document.getElementById("entryNameInput").focus(), 100);
+      }
+
       await pullState(true);
       setInterval(() => {
-        if (!isEditingNow) pullState(false);
+        if (!isEditingNow && getSessionName()) pullState(false);
       }, 4000);
     });
 
+    function submitEntryName() {
+      const val = document.getElementById("entryNameInput").value.trim();
+      if (!val) {
+        document.getElementById("nameError").innerText = "請輸入名字才能進入喔！";
+        return;
+      }
+      sessionStorage.setItem("chiikawa_session_name", val);
+      document.getElementById("myNameInput").value = val;
+      document.getElementById("nameOverlay").style.display = "none";
+      applyPermissionsUI();
+      renderTable();
+      pullState(true);
+    }
+
     function saveMyName() {
-      localStorage.setItem("chiikawa_my_name", document.getElementById("myNameInput").value.trim() || "訪客");
+      const val = document.getElementById("myNameInput").value.trim();
+      if (val) sessionStorage.setItem("chiikawa_session_name", val);
       applyPermissionsUI();
       renderTable();
     }
 
     function getMyName() {
-      return document.getElementById("myNameInput").value.trim() || "訪客";
+      return document.getElementById("myNameInput").value.trim() || getSessionName() || "訪客";
     }
 
     function switchRoom() {
@@ -603,13 +642,21 @@ HTML_TEMPLATE = r"""
 
       const adminPanel = document.getElementById("adminPanel");
       const lockBtn = document.getElementById("lockToggleBtn");
+      const topLockBtn = document.getElementById("topLockBtn");
+
       if (isAdmin) {
         adminPanel.style.display = "block";
         lockBtn.className = isLocked ? "btn-lock-on" : "btn-lock-off";
-        lockBtn.innerText = isLocked ? "🔒 僅限授權名單（點此全體開放）" : "🔓 全體開放中（點此鎖定）";
+        lockBtn.innerText = isLocked ? "🔒 僅限授權名單（點此全體開放）" : "🔓 全體開放中（點此鎖定房間）";
+
+        topLockBtn.style.display = "inline-block";
+        topLockBtn.className = isLocked ? "btn-lock-on" : "btn-lock-off";
+        topLockBtn.innerText = isLocked ? "🔒 已鎖定" : "🔓 鎖定房間";
+
         document.getElementById("adminBtn").innerText = "👑 團主已登入";
       } else {
         adminPanel.style.display = "none";
+        topLockBtn.style.display = "none";
         document.getElementById("adminBtn").innerText = "👑 團主管理";
       }
     }
@@ -634,34 +681,41 @@ HTML_TEMPLATE = r"""
           adminPin = "";
           sessionStorage.removeItem("chiikawa_rpw_" + currentRoom);
           applyPermissionsUI();
+          renderTable();
           await pullState(true);
         }
         return;
       }
       const pin = prompt("請輸入團主密碼（預設 1234）：");
       if (!pin) return;
-      const res = await fetch("/api/verify_admin", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pin })
-      });
-      const data = await res.json();
-      if (data.ok) {
-        isAdmin = true;
-        adminPin = pin;
-        document.getElementById("pwOverlay").style.display = "none";
-        await pullState(true);
-        document.getElementById("statusText").innerText = "👑 已進入團主模式";
-      } else {
-        alert("密碼錯誤！");
+      try {
+        const res = await fetch("/api/verify_admin", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pin })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          isAdmin = true;
+          adminPin = pin;
+          document.getElementById("pwOverlay").style.display = "none";
+          applyPermissionsUI();
+          renderTable();
+          await pullState(true);
+          document.getElementById("statusText").innerText = "👑 已進入團主模式";
+        } else {
+          alert("密碼錯誤！");
+        }
+      } catch {
+        alert("驗證失敗，請稍後再試");
       }
     }
 
     async function toggleLock() {
       if (!isAdmin) return;
       isLocked = !isLocked;
-      await pushState();
       applyPermissionsUI();
+      await pushState();
       renderTable();
     }
 
@@ -672,7 +726,7 @@ HTML_TEMPLATE = r"""
       roomPasswordSetting = document.getElementById("roomPwSettingInput").value.trim();
       await pushState();
       applyPermissionsUI();
-      const pwMsg = roomPasswordSetting ? `密碼已設為「${roomPasswordSetting}」` : "已取消入房密碼";
+      const pwMsg = roomPasswordSetting ? `入房密碼：${roomPasswordSetting}` : "免入房密碼";
       document.getElementById("statusText").innerText = `💾 已套用設定（${pwMsg}）！`;
     }
 
@@ -926,7 +980,7 @@ HTML_TEMPLATE = r"""
       const buyerDis = isAdmin ? "" : "disabled";
 
       if (products.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; color:#999; padding:36px;">「${escapeHtml(currentRoom)}」目前是空的，輸入名字後貼上網址就能一起買啦 🛒</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; color:#999; padding:36px;">「${escapeHtml(currentRoom)}」目前是空的，貼上網址就能一起買啦 🛒</td></tr>`;
         recalculate();
         return;
       }
@@ -1266,7 +1320,6 @@ def api_state():
         new_allowed = data.get("allowedEditors", allowed_list)
         new_rpw = str(data.get("roomPassword", room_pw)).strip()
     else:
-        # 非團主：只允許更新「買家是自己」的商品，其他人商品強制保留原樣
         other_items = [p for p in (current.get("products") or []) if (p.get("buyer") or "訪客") != user_name]
         my_items = [p for p in incoming_products if (p.get("buyer") or "訪客") == user_name]
         merged_products = other_items + my_items
