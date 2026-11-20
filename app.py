@@ -16,7 +16,7 @@ from flask import Flask, request, jsonify, render_template_string, send_file
 app = Flask(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-HTML_TEMPLATE = """
+HTML_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
