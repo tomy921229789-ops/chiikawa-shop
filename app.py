@@ -702,6 +702,15 @@ def parse_json_ld(soup):
             continue
     return "", "", 0, ""
 
+def extract_first_number(text):
+    m = re.search(r"[\d,]+(?:\.\d+)?", str(text))
+    if m:
+        try:
+            return float(m.group(0).replace(",", ""))
+        except ValueError:
+            return 0
+    return 0
+
 def scrape_product(url):
     currency = guess_currency_by_url(url)
     try:
@@ -709,7 +718,7 @@ def scrape_product(url):
         res.encoding = res.apparent_encoding or 'utf-8'
         soup = BeautifulSoup(res.text, 'html.parser')
 
-        title, img_url, price_num, ld_curr = parse_json_ld(soup)
+        title, img_url, ld_price, ld_curr = parse_json_ld(soup)
         if ld_curr in SUPPORTED_CURRENCIES:
             currency = ld_curr
 
@@ -727,22 +736,39 @@ def scrape_product(url):
         if curr_meta and curr_meta.get("content") and curr_meta["content"].upper() in SUPPORTED_CURRENCIES:
             currency = curr_meta["content"].upper()
 
+        # 1. 優先抓「特價 / 折扣價」（Cafe24 專屬標籤與變數）
+        price_num = 0
+        sale_meta = soup.find("meta", property="product:sale_price:amount")
+        if sale_meta and sale_meta.get("content"):
+            price_num = extract_first_number(sale_meta["content"])
+
         if not price_num:
-            for prop in ["product:sale_price:amount", "product:price:amount", "og:price:amount"]:
+            sale_el = soup.select_one("#span_product_price_sale")
+            if sale_el:
+                price_num = extract_first_number(sale_el.get_text())
+
+        if not price_num:
+            sale_js = re.search(r"product_sale_price\s*=\s*['\"]?(\d+(?:\.\d+)?)['\"]?", res.text)
+            if sale_js:
+                price_num = float(sale_js.group(1))
+
+        # 2. 沒有特價時，才改抓 JSON-LD 或原價
+        if not price_num and ld_price:
+            price_num = ld_price
+
+        if not price_num:
+            for prop in ["product:price:amount", "og:price:amount"]:
                 m = soup.find("meta", property=prop)
                 if m and m.get("content"):
-                    num_str = re.sub(r"[^\d.]", "", m["content"])
-                    if num_str:
-                        price_num = float(num_str)
+                    price_num = extract_first_number(m["content"])
+                    if price_num:
                         break
 
         if not price_num:
-            price_el = soup.select_one("#span_product_price_sale, #span_product_price_text, .price, [itemprop='price']")
+            price_el = soup.select_one("#span_product_price_text, .price, [itemprop='price']")
             if price_el:
                 val = price_el.get("content") or price_el.get_text()
-                num_str = re.sub(r"[^\d.]", "", val)
-                if num_str:
-                    price_num = float(num_str)
+                price_num = extract_first_number(val)
 
         return {"url": url, "title": title, "img": img_url, "price": price_num, "currency": currency}
     except Exception as e:
