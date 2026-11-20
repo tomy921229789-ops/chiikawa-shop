@@ -28,10 +28,12 @@ def default_room_state():
         "rates": {"KRW": 0.0235, "JPY": 0.215, "CNY": 4.50, "USD": 32.5, "AUD": 21.2, "TWD": 1},
         "feeChecked": False,
         "shipping": 0,
-        "shippingMode": "qty",       # "qty" 依件數均分 / "amount" 依金額比例
-        "freeShipThreshold": 0,      # 免運門檻 (TWD)
-        "bankInfo": "",              # 團主匯款資訊
-        "paidBuyers": {},            # {"小明": True}
+        "shippingMode": "qty",
+        "freeShipThreshold": 0,
+        "bankInfo": "",
+        "announcement": "",
+        "deadline": "",
+        "paidBuyers": {},
         "locked": False,
         "allowedEditors": [],
         "roomPassword": "",
@@ -62,7 +64,7 @@ HTML_TEMPLATE = r"""
       background-attachment: fixed;
       min-height: 100vh;
     }
-    .container { max-width: 1300px; margin: 0 auto; }
+    .container { max-width: 1340px; margin: 0 auto; }
     .top-bar {
       display: flex;
       flex-wrap: wrap;
@@ -115,7 +117,7 @@ HTML_TEMPLATE = r"""
       padding: 10px 16px;
       border-radius: 18px;
       border: 2px solid #ffb3c6;
-      margin-bottom: 14px;
+      margin-bottom: 12px;
       font-size: 13px;
       font-weight: 700;
     }
@@ -142,6 +144,30 @@ HTML_TEMPLATE = r"""
       font-size: 12px;
       font-weight: 800;
     }
+    .announce-bar {
+      display: none;
+      background: rgba(255, 248, 220, 0.96);
+      border: 2px solid #ffd166;
+      border-radius: 14px;
+      padding: 10px 16px;
+      margin-bottom: 12px;
+      font-size: 14px;
+      font-weight: 800;
+      color: #6c4f3d;
+    }
+    .countdown-bar {
+      display: none;
+      background: linear-gradient(90deg, #ff8fab, #fb6f92);
+      color: #fff;
+      border-radius: 14px;
+      padding: 9px 16px;
+      margin-bottom: 12px;
+      font-size: 14px;
+      font-weight: 800;
+      text-align: center;
+      box-shadow: 0 4px 12px rgba(251, 111, 146, 0.3);
+    }
+    .countdown-bar.expired { background: #6c757d; box-shadow: none; }
     .admin-panel {
       display: none;
       background: rgba(92, 71, 66, 0.96);
@@ -168,12 +194,7 @@ HTML_TEMPLATE = r"""
       color: #5c4742;
       font-weight: 700;
     }
-    .rooms-list {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      margin-top: 6px;
-    }
+    .rooms-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
     .room-chip {
       display: inline-flex;
       align-items: center;
@@ -187,12 +208,7 @@ HTML_TEMPLATE = r"""
       cursor: pointer;
     }
     .room-chip:hover { background: rgba(255, 209, 102, 0.3); }
-    .room-chip-del {
-      color: #ff8fab;
-      font-weight: 900;
-      margin-left: 2px;
-      padding: 0 3px;
-    }
+    .room-chip-del { color: #ff8fab; font-weight: 900; margin-left: 2px; padding: 0 3px; }
     .room-chip-del:hover { color: #ff4d6d; }
     .lock-banner {
       background: #ffccd5;
@@ -310,7 +326,6 @@ HTML_TEMPLATE = r"""
     }
     .extra-item input[type="number"] { width: 74px; text-align: right; }
 
-    /* 免運進度條 */
     .freeship-card {
       display: none;
       background: rgba(255, 255, 255, 0.94);
@@ -327,19 +342,8 @@ HTML_TEMPLATE = r"""
       margin-bottom: 6px;
       color: #5c4742;
     }
-    .progress-track {
-      width: 100%;
-      height: 14px;
-      background: #ffe5ec;
-      border-radius: 50px;
-      overflow: hidden;
-    }
-    .progress-fill {
-      height: 100%;
-      background: linear-gradient(90deg, #ff8fab, #ffd166);
-      border-radius: 50px;
-      transition: width 0.4s ease;
-    }
+    .progress-track { width: 100%; height: 14px; background: #ffe5ec; border-radius: 50px; overflow: hidden; }
+    .progress-fill { height: 100%; background: linear-gradient(90deg, #ff8fab, #ffd166); border-radius: 50px; transition: width 0.4s ease; }
     .progress-fill.reached { background: linear-gradient(90deg, #2a9d8f, #70c1b3); }
 
     .summary {
@@ -380,14 +384,7 @@ HTML_TEMPLATE = r"""
     .buyer-pill.active-filter { background: #ff8fab; color: #fff; border-color: #fb6f92; }
     .buyer-pill.active-filter .pill-amt { color: #ffd166; }
     .pill-amt { color: #fb6f92; font-size: 15px; }
-    .paid-tag {
-      font-size: 11px;
-      padding: 2px 7px;
-      border-radius: 50px;
-      font-weight: 800;
-      background: #ffe5ec;
-      color: #c9184a;
-    }
+    .paid-tag { font-size: 11px; padding: 2px 7px; border-radius: 50px; font-weight: 800; background: #ffe5ec; color: #c9184a; }
     .paid-tag.is-paid { background: #d8f3dc; color: #1b7a68; }
 
     .table-wrap {
@@ -403,35 +400,25 @@ HTML_TEMPLATE = r"""
     th { background: rgba(255, 240, 243, 0.95); font-size: 12px; color: #5c4742; font-weight: 800; white-space: nowrap; }
     tr.row-other { background: rgba(245, 240, 242, 0.55); }
     .thumb-box { display: flex; flex-direction: column; align-items: center; gap: 3px; }
-    .thumb { width: 66px; height: 66px; object-fit: cover; border-radius: 10px; border: 2px solid #ffe5ec; background: #fff; }
+    .thumb { width: 64px; height: 64px; object-fit: cover; border-radius: 10px; border: 2px solid #ffe5ec; background: #fff; }
     .btn-img { font-size: 11px; padding: 2px 7px; background: #ffe5ec; color: #5c4742; box-shadow: none; }
     .btn-img:hover { background: #ffb3c6; color: #fff; }
-    .title-input { width: 100%; min-width: 145px; padding: 4px 6px; border: 1px solid transparent; border-radius: 8px; font-size: 13px; background: transparent; color: #5c4742; font-weight: 600; }
+    .title-input { width: 100%; min-width: 140px; padding: 4px 6px; border: 1px solid transparent; border-radius: 8px; font-size: 13px; background: transparent; color: #5c4742; font-weight: 600; }
     .title-input:hover:not(:disabled), .title-input:focus { border-color: #ffb3c6; background: #fff; outline: none; }
     .spec-stack { display: flex; flex-direction: column; gap: 5px; }
-    .spec-input, .spec-select {
-      width: 140px;
-      padding: 5px 6px;
-      border: 1px solid #ffb3c6;
-      border-radius: 8px;
-      font-size: 12px;
-      color: #5c4742;
-      background: #fff;
-    }
-    .note-input {
-      width: 140px;
-      padding: 4px 6px;
-      border: 1px dashed #ffb3c6;
-      border-radius: 8px;
-      font-size: 12px;
-      color: #5c4742;
-      background: #fff8fa;
-    }
-    .buyer-input { width: 66px; padding: 5px; border: 1px solid #ffb3c6; border-radius: 8px; font-size: 12px; color: #5c4742; font-weight: 700; text-align: center; background: #fff0f3; }
+    .spec-input, .spec-select { width: 136px; padding: 5px 6px; border: 1px solid #ffb3c6; border-radius: 8px; font-size: 12px; color: #5c4742; background: #fff; }
+    .note-input { width: 136px; padding: 4px 6px; border: 1px dashed #ffb3c6; border-radius: 8px; font-size: 12px; color: #5c4742; background: #fff8fa; }
+    .buyer-input { width: 64px; padding: 5px; border: 1px solid #ffb3c6; border-radius: 8px; font-size: 12px; color: #5c4742; font-weight: 700; text-align: center; background: #fff0f3; }
+    .status-select { padding: 4px 5px; border: 1px solid #ffb3c6; border-radius: 8px; font-size: 12px; font-weight: 700; background: #fff; color: #5c4742; }
+    .status-badge { display: inline-block; padding: 3px 8px; border-radius: 50px; font-size: 11px; font-weight: 800; white-space: nowrap; }
+    .st-wait { background: #f1f3f5; color: #495057; }
+    .st-ordered { background: #e7f5ff; color: #1971c2; }
+    .st-arrived { background: #d8f3dc; color: #1b7a68; }
+    .st-out { background: #ffe3e3; color: #c92a2a; }
     input:disabled, select:disabled { background: #f3ecee !important; border-color: #e2d5d8 !important; color: #7d6b66 !important; cursor: not-allowed; }
     .curr-select { padding: 4px 5px; border: 1px solid #ffb3c6; border-radius: 8px; font-size: 12px; font-weight: bold; background: #fff; color: #5c4742; }
-    .price-input { width: 80px; padding: 5px; border: 1px solid #ffb3c6; border-radius: 8px; text-align: right; font-size: 13px; color: #5c4742; }
-    .qty-input { width: 46px; padding: 5px; border: 1px solid #ffb3c6; border-radius: 8px; text-align: center; font-size: 13px; color: #5c4742; }
+    .price-input { width: 78px; padding: 5px; border: 1px solid #ffb3c6; border-radius: 8px; text-align: right; font-size: 13px; color: #5c4742; }
+    .qty-input { width: 44px; padding: 5px; border: 1px solid #ffb3c6; border-radius: 8px; text-align: center; font-size: 13px; color: #5c4742; }
     .twd-price { font-weight: 800; color: #fb6f92; white-space: nowrap; font-size: 13px; }
     .action-cell { display: flex; align-items: center; gap: 4px; }
     .btn-plus1 { background: #ffd166; color: #5c4742; padding: 4px 8px; font-size: 11px; box-shadow: none; }
@@ -476,7 +463,6 @@ HTML_TEMPLATE = r"""
   </style>
 </head>
 <body>
-  <!-- 入房密碼視窗 -->
   <div id="pwOverlay" class="modal-overlay" style="z-index: 1000;">
     <div class="modal-box">
       <h2>🔐 此房間設有入房密碼</h2>
@@ -490,7 +476,6 @@ HTML_TEMPLATE = r"""
     </div>
   </div>
 
-  <!-- 首次進入強制輸入名字視窗 -->
   <div id="nameOverlay" class="modal-overlay" style="z-index: 990;">
     <div class="modal-box">
       <h2>👋 請先輸入你的名字</h2>
@@ -523,21 +508,31 @@ HTML_TEMPLATE = r"""
       <div class="online-box" id="onlineBox">🟢 目前在線：讀取中...</div>
     </div>
 
+    <!-- 團主置頂公告 & 倒數計時 -->
+    <div id="announceBar" class="announce-bar"></div>
+    <div id="countdownBar" class="countdown-bar"></div>
+
     <!-- 團主專屬控制台 -->
     <div id="adminPanel" class="admin-panel">
-      <div style="color:#ffd166; font-size:14px;">👑 團主控制台（僅團主可見）</div>
+      <div style="color:#ffd166; font-size:14px;">👑 團主控制台（僅團主可見，重整與換房會自動保持登入）</div>
       <div class="admin-row">
         <button id="lockToggleBtn" onclick="toggleLock()"></button>
         <span>｜ 授權名單：</span>
-        <input type="text" id="allowedEditorsInput" placeholder="例：小明, 小美" style="width:160px;">
+        <input type="text" id="allowedEditorsInput" placeholder="例：小明, 小美" style="width:150px;">
         <span>｜ 入房密碼：</span>
-        <input type="text" id="roomPwSettingInput" placeholder="留空免密碼" style="width:110px;">
+        <input type="text" id="roomPwSettingInput" placeholder="留空免密碼" style="width:105px;">
         <span>｜ 免運門檻 NT$：</span>
-        <input type="number" id="freeShipInput" placeholder="0=不顯示" min="0" step="100" style="width:95px;">
+        <input type="number" id="freeShipInput" placeholder="0=關閉" min="0" step="100" style="width:88px;">
+        <span>｜ 結單倒數：</span>
+        <input type="datetime-local" id="deadlineInput" style="width:175px;">
       </div>
       <div class="admin-row">
-        <span>🏦 匯款資訊（會附在 LINE 報價）：</span>
-        <input type="text" id="bankInfoInput" placeholder="例：中信(822) 1234-5678-9012 / LINE Pay" style="flex:1; min-width:240px;">
+        <span>📢 置頂公告：</span>
+        <input type="text" id="announceInput" placeholder="例：LMC 版型偏大建議拿小一號，周五晚上10點準時收單！" style="flex:1; min-width:220px;">
+      </div>
+      <div class="admin-row">
+        <span>🏦 匯款資訊：</span>
+        <input type="text" id="bankInfoInput" placeholder="例：中信(822) 1234-5678-9012 / LINE Pay（會附在 LINE 報價）" style="flex:1; min-width:220px;">
         <button class="btn-sm btn-rate" onclick="saveAdminSettings()">💾 套用全部設定</button>
       </div>
       <div class="admin-row" style="align-items:flex-start; flex-direction:column; gap:4px; margin-top:10px; padding-top:8px; border-top:1px dashed rgba(255,209,102,0.4);">
@@ -551,7 +546,6 @@ HTML_TEMPLATE = r"""
 
     <div id="lockBanner" class="lock-banner"></div>
 
-    <!-- 免運進度條 -->
     <div id="freeShipCard" class="freeship-card">
       <div class="freeship-text">
         <span id="freeShipMsg">🔥 湊免運進度</span>
@@ -563,7 +557,7 @@ HTML_TEMPLATE = r"""
     </div>
 
     <div class="card">
-      <textarea id="urlInput" placeholder="貼上各國商品網址（韓、日、中、台、美、澳皆可，一行一個；看到別人貼的好物也可以直接按右側 +1 跟團）..."></textarea>
+      <textarea id="urlInput" placeholder="貼上各國商品網址（韓、日、中、台、美、澳皆可，一行一個；價格與幣別已鎖定僅團主可改）..."></textarea>
       <div class="controls">
         <button id="fetchBtn" class="edit-only" onclick="fetchProducts()">✨ 抓取並加入清單</button>
         <button class="btn-add edit-only" onclick="addManualRow()">+ 手動新增</button>
@@ -617,19 +611,20 @@ HTML_TEMPLATE = r"""
         <thead>
           <tr>
             <th style="width: 30px;"><input type="checkbox" class="admin-only" id="selectAll" checked onchange="toggleAll(this)"></th>
-            <th style="width: 80px; text-align:center;">商品照</th>
+            <th style="width: 78px; text-align:center;">商品照</th>
             <th>商品名稱</th>
-            <th style="width: 150px;">規格 / 顏色備註</th>
-            <th style="width: 72px; text-align:center;">買家🔒</th>
-            <th style="width: 72px;">幣別</th>
-            <th style="width: 86px;">原幣單價</th>
-            <th style="width: 86px;">台幣單價</th>
-            <th style="width: 52px; text-align:center;">數量</th>
-            <th style="width: 74px; text-align:center;">操作</th>
+            <th style="width: 146px;">規格 / 顏色備註</th>
+            <th style="width: 70px; text-align:center;">買家🔒</th>
+            <th style="width: 82px; text-align:center;">進度</th>
+            <th style="width: 70px;">幣別🔒</th>
+            <th style="width: 84px;">單價🔒</th>
+            <th style="width: 84px;">台幣單價</th>
+            <th style="width: 50px; text-align:center;">數量</th>
+            <th style="width: 72px; text-align:center;">操作</th>
           </tr>
         </thead>
         <tbody id="productTable">
-          <tr><td colspan="10" style="text-align:center; color:#999; padding:36px;">載入雲端清單中...</td></tr>
+          <tr><td colspan="11" style="text-align:center; color:#999; padding:36px;">載入雲端清單中...</td></tr>
         </tbody>
       </table>
     </div>
@@ -642,6 +637,8 @@ HTML_TEMPLATE = r"""
     let roomPasswordSetting = "";
     let freeShipThreshold = 0;
     let bankInfo = "";
+    let announcement = "";
+    let deadlineStr = "";
     let paidBuyers = {};
     let filterBuyer = null;
     let isAdmin = false;
@@ -649,6 +646,7 @@ HTML_TEMPLATE = r"""
     let lastUpdatedAt = 0;
     let isEditingNow = false;
     const CURRENCIES = ["KRW", "JPY", "CNY", "USD", "AUD", "TWD"];
+    const ITEM_STATUSES = ["⏳ 待下單", "🛍️ 已下單", "📦 已到貨", "❌ 斷貨"];
 
     let clientId = sessionStorage.getItem("chiikawa_cid");
     if (!clientId) {
@@ -659,17 +657,38 @@ HTML_TEMPLATE = r"""
     const urlParams = new URLSearchParams(window.location.search);
     let currentRoom = (urlParams.get("room") || "大廳").trim();
 
-    function getSavedRoomPw() {
-      return sessionStorage.getItem("chiikawa_rpw_" + currentRoom) || "";
-    }
+    function getSavedRoomPw() { return sessionStorage.getItem("chiikawa_rpw_" + currentRoom) || ""; }
+    function getSessionName() { return sessionStorage.getItem("chiikawa_session_name") || ""; }
+    function makeId() { return "p_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6); }
 
-    function getSessionName() {
-      return sessionStorage.getItem("chiikawa_session_name") || "";
+    function isDeadlineExpired() {
+      if (!deadlineStr) return false;
+      const t = new Date(deadlineStr).getTime();
+      return !isNaN(t) && Date.now() >= t;
     }
 
     window.addEventListener("DOMContentLoaded", async () => {
       document.getElementById("roomInput").value = currentRoom;
       document.getElementById("pwRoomName").innerText = currentRoom;
+
+      // 自動恢復團主登入狀態
+      const savedPin = sessionStorage.getItem("chiikawa_admin_pin");
+      if (savedPin) {
+        try {
+          const res = await fetch("/api/verify_admin", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pin: savedPin })
+          });
+          const d = await res.json();
+          if (d.ok) {
+            isAdmin = true;
+            adminPin = savedPin;
+          } else {
+            sessionStorage.removeItem("chiikawa_admin_pin");
+          }
+        } catch {}
+      }
 
       const sName = getSessionName();
       if (sName) {
@@ -680,10 +699,43 @@ HTML_TEMPLATE = r"""
       }
 
       await pullState(true);
+      if (isAdmin) loadAllRooms();
+
       setInterval(() => {
         if (!isEditingNow && getSessionName()) pullState(false);
       }, 4000);
+      setInterval(updateCountdownUI, 1000);
     });
+
+    function updateCountdownUI() {
+      const bar = document.getElementById("countdownBar");
+      if (!deadlineStr) {
+        bar.style.display = "none";
+        return;
+      }
+      const target = new Date(deadlineStr).getTime();
+      if (isNaN(target)) {
+        bar.style.display = "none";
+        return;
+      }
+      bar.style.display = "block";
+      const diff = target - Date.now();
+      if (diff <= 0) {
+        if (!bar.classList.contains("expired")) {
+          bar.classList.add("expired");
+          bar.innerText = "⏰ 結單時間已到，系統已自動鎖定房間！";
+          applyPermissionsUI();
+          renderTable();
+        }
+        return;
+      }
+      bar.classList.remove("expired");
+      const d = Math.floor(diff / 86400000);
+      const h = Math.floor((diff % 86400000) / 3600000);
+      const m = Math.floor((diff % 3600000) / 60000);
+      const s = Math.floor((diff % 60000) / 1000);
+      bar.innerText = `⏳ 距離結單倒數：${d > 0 ? d + '天 ' : ''}${String(h).padStart(2,'0')}時 ${String(m).padStart(2,'0')}分 ${String(s).padStart(2,'0')}秒`;
+    }
 
     function submitEntryName() {
       const val = document.getElementById("entryNameInput").value.trim();
@@ -725,9 +777,13 @@ HTML_TEMPLATE = r"""
       });
     }
 
+    function isEffectivelyLocked() {
+      return isLocked || isDeadlineExpired();
+    }
+
     function canEdit() {
       if (isAdmin) return true;
-      if (!isLocked) return true;
+      if (!isEffectivelyLocked()) return true;
       return allowedEditors.includes(getMyName());
     }
 
@@ -753,16 +809,25 @@ HTML_TEMPLATE = r"""
 
     function applyPermissionsUI() {
       const editable = canEdit();
+      const lockedNow = isEffectivelyLocked();
       const banner = document.getElementById("lockBanner");
 
-      if (isLocked) {
+      const annBar = document.getElementById("announceBar");
+      if (announcement) {
+        annBar.style.display = "block";
+        annBar.innerText = `📢 團主公告：${announcement}`;
+      } else {
+        annBar.style.display = "none";
+      }
+
+      if (lockedNow) {
         banner.style.display = "block";
         if (isAdmin) {
           banner.innerText = `🔒 房間已鎖定：目前僅限團主與授權名單（${allowedEditors.join("、") || "無"}）可編輯各自商品`;
         } else if (editable) {
           banner.innerText = `✨ 你已被團主個別授權編輯自己的商品（其他未授權成員僅供檢視）`;
         } else {
-          banner.innerText = `🔒 團主已鎖定此房間，目前為「僅供檢視」模式`;
+          banner.innerText = `🔒 房間已鎖定結單，目前為「僅供檢視」模式`;
         }
       } else {
         banner.style.display = "none";
@@ -785,7 +850,7 @@ HTML_TEMPLATE = r"""
         topLockBtn.className = isLocked ? "btn-lock-on" : "btn-lock-off";
         topLockBtn.innerText = isLocked ? "🔒 已鎖定" : "🔓 鎖定房間";
 
-        document.getElementById("adminBtn").innerText = "👑 團主已登入";
+        document.getElementById("adminBtn").innerText = "👑 團主登出";
       } else {
         adminPanel.style.display = "none";
         topLockBtn.style.display = "none";
@@ -851,6 +916,7 @@ HTML_TEMPLATE = r"""
         if (confirm("要登出團主模式嗎？")) {
           isAdmin = false;
           adminPin = "";
+          sessionStorage.removeItem("chiikawa_admin_pin");
           sessionStorage.removeItem("chiikawa_rpw_" + currentRoom);
           applyPermissionsUI();
           renderTable();
@@ -870,6 +936,7 @@ HTML_TEMPLATE = r"""
         if (data.ok) {
           isAdmin = true;
           adminPin = pin;
+          sessionStorage.setItem("chiikawa_admin_pin", pin);
           document.getElementById("pwOverlay").style.display = "none";
           applyPermissionsUI();
           renderTable();
@@ -898,9 +965,12 @@ HTML_TEMPLATE = r"""
       allowedEditors = rawNames.split(/[,，\s]+/).map(s => s.trim()).filter(Boolean);
       roomPasswordSetting = document.getElementById("roomPwSettingInput").value.trim();
       freeShipThreshold = parseFloat(document.getElementById("freeShipInput").value) || 0;
+      deadlineStr = document.getElementById("deadlineInput").value || "";
+      announcement = document.getElementById("announceInput").value.trim();
       bankInfo = document.getElementById("bankInfoInput").value.trim();
       await pushState();
       applyPermissionsUI();
+      updateCountdownUI();
       recalculate();
       document.getElementById("statusText").innerText = "💾 已套用全部團主設定！";
     }
@@ -940,6 +1010,8 @@ HTML_TEMPLATE = r"""
         allowedEditors = Array.isArray(st.allowedEditors) ? st.allowedEditors : [];
         freeShipThreshold = parseFloat(st.freeShipThreshold) || 0;
         bankInfo = st.bankInfo || "";
+        announcement = st.announcement || "";
+        deadlineStr = st.deadline || "";
         paidBuyers = (st.paidBuyers && typeof st.paidBuyers === "object") ? st.paidBuyers : {};
 
         if (isAdmin) {
@@ -949,6 +1021,8 @@ HTML_TEMPLATE = r"""
           }
           document.getElementById("allowedEditorsInput").value = allowedEditors.join(", ");
           document.getElementById("freeShipInput").value = freeShipThreshold || "";
+          document.getElementById("deadlineInput").value = deadlineStr;
+          document.getElementById("announceInput").value = announcement;
           document.getElementById("bankInfoInput").value = bankInfo;
         }
 
@@ -963,6 +1037,7 @@ HTML_TEMPLATE = r"""
         document.getElementById("shippingModeSelect").value = st.shippingMode || "qty";
 
         applyPermissionsUI();
+        updateCountdownUI();
         renderTable();
         return true;
       } catch {
@@ -983,6 +1058,8 @@ HTML_TEMPLATE = r"""
         shippingMode: document.getElementById("shippingModeSelect").value || "qty",
         freeShipThreshold: freeShipThreshold,
         bankInfo: bankInfo,
+        announcement: announcement,
+        deadline: deadlineStr,
         paidBuyers: paidBuyers,
         locked: isLocked,
         allowedEditors: allowedEditors,
@@ -1088,12 +1165,12 @@ HTML_TEMPLATE = r"""
           if (data.items && data.items.length > 0) {
             const it = data.items[0];
             const defaultSpec = (it.options && it.options.length > 0) ? it.options[0].label : "";
-            products.push({ ...it, spec: defaultSpec, note: "", buyer: myName, qty: 1, checked: true });
+            products.push({ id: makeId(), ...it, spec: defaultSpec, note: "", status: "⏳ 待下單", buyer: myName, qty: 1, checked: true });
             added++;
             await pushState();
           }
         } catch {
-          products.push({ url: url, title: "抓取逾時或受阻，請手動補填", img: "", price: 0, currency: "TWD", options: [], spec: "", note: "", buyer: myName, qty: 1, checked: true });
+          products.push({ id: makeId(), url: url, title: "抓取逾時或受阻，請通知團主補價", img: "", price: 0, currency: "TWD", options: [], spec: "", note: "", status: "⏳ 待下單", buyer: myName, qty: 1, checked: true });
           added++;
           await pushState();
         }
@@ -1108,7 +1185,7 @@ HTML_TEMPLATE = r"""
 
     async function addManualRow() {
       if (!canEdit()) return;
-      products.push({ url: "", title: "手動新增商品", img: "", price: 0, currency: "TWD", options: [], spec: "", note: "", buyer: getMyName(), qty: 1, checked: true });
+      products.push({ id: makeId(), url: "", title: "手動新增商品", img: "", price: 0, currency: "TWD", options: [], spec: "", note: "", status: "⏳ 待下單", buyer: getMyName(), qty: 1, checked: true });
       await pushState();
     }
 
@@ -1116,8 +1193,10 @@ HTML_TEMPLATE = r"""
       if (!canEdit()) return alert("目前沒有編輯權限！");
       const src = products[idx];
       const copy = JSON.parse(JSON.stringify(src));
+      copy.id = makeId();
       copy.buyer = getMyName();
       copy.qty = 1;
+      copy.status = "⏳ 待下單";
       copy.checked = true;
       products.push(copy);
       await pushState();
@@ -1157,6 +1236,20 @@ HTML_TEMPLATE = r"""
       return [p.spec || "", p.note || ""].map(s => s.trim()).filter(Boolean).join(" / ");
     }
 
+    function renderStatusCell(p, idx) {
+      const st = p.status || "⏳ 待下單";
+      if (isAdmin) {
+        return `<select class="status-select" id="status-${idx}" onchange="syncAndPush(${idx})">
+          ${ITEM_STATUSES.map(s => `<option value="${s}" ${st === s ? 'selected' : ''}>${s}</option>`).join("")}
+        </select>`;
+      }
+      let cls = "st-wait";
+      if (st.includes("已下單")) cls = "st-ordered";
+      else if (st.includes("已到貨")) cls = "st-arrived";
+      else if (st.includes("斷貨")) cls = "st-out";
+      return `<span class="status-badge ${cls}">${escapeHtml(st)}</span>`;
+    }
+
     function renderSpecCell(p, idx, disabledAttr) {
       if (Array.isArray(p.options) && p.options.length > 0) {
         const optsHtml = p.options.map(o => {
@@ -1176,11 +1269,11 @@ HTML_TEMPLATE = r"""
 
     function renderTable() {
       const tbody = document.getElementById("productTable");
-      const buyerDis = isAdmin ? "" : "disabled";
+      const adminDis = isAdmin ? "" : "disabled";
       const canPlusOne = canEdit();
 
       if (products.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; color:#999; padding:36px;">「${escapeHtml(currentRoom)}」目前是空的，貼上網址就能一起買啦 🛒</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; color:#999; padding:36px;">「${escapeHtml(currentRoom)}」目前是空的，貼上網址就能一起買啦 🛒</td></tr>`;
         recalculate();
         return;
       }
@@ -1206,13 +1299,14 @@ HTML_TEMPLATE = r"""
             ${p.url ? `<a class="link-sm" href="${p.url}" target="_blank">開啟原網頁 ↗</a>` : ''}
           </td>
           <td>${renderSpecCell(p, idx, rowDis)}</td>
-          <td><input type="text" class="buyer-input" id="buyer-${idx}" value="${escapeHtml(p.buyer || '訪客')}" ${buyerDis} title="${isAdmin ? '團主可修改買家' : '買家已鎖定，僅團主可修改'}" onfocus="isEditingNow=true" onblur="isEditingNow=false;syncAndPush(${idx})"></td>
+          <td><input type="text" class="buyer-input" id="buyer-${idx}" value="${escapeHtml(p.buyer || '訪客')}" ${adminDis} title="僅團主可修改買家" onfocus="isEditingNow=true" onblur="isEditingNow=false;syncAndPush(${idx})"></td>
+          <td style="text-align:center;">${renderStatusCell(p, idx)}</td>
           <td>
-            <select class="curr-select" id="curr-${idx}" ${rowDis} onchange="syncAndPush(${idx})">
+            <select class="curr-select" id="curr-${idx}" ${adminDis} title="僅團主可修改幣別" onchange="syncAndPush(${idx})">
               ${CURRENCIES.map(c => `<option value="${c}" ${p.currency === c ? 'selected' : ''}>${c}</option>`).join("")}
             </select>
           </td>
-          <td><input type="number" class="price-input" id="price-${idx}" value="${p.price}" step="any" min="0" ${rowDis} onfocus="isEditingNow=true" onblur="isEditingNow=false;syncAndPush(${idx})"></td>
+          <td><input type="number" class="price-input" id="price-${idx}" value="${p.price}" step="any" min="0" ${adminDis} title="僅團主可修改價格" onfocus="isEditingNow=true" onblur="isEditingNow=false;syncAndPush(${idx})"></td>
           <td class="twd-price" id="twd-${idx}">NT$0</td>
           <td><input type="number" class="qty-input" id="qty-${idx}" value="${p.qty || 1}" min="1" ${rowDis} onchange="syncAndPush(${idx})"></td>
           <td>
@@ -1225,7 +1319,7 @@ HTML_TEMPLATE = r"""
       `;
       }).join("");
 
-      tbody.innerHTML = rowsHtml || `<tr><td colspan="10" style="text-align:center; color:#999; padding:30px;">沒有符合篩選條件的商品</td></tr>`;
+      tbody.innerHTML = rowsHtml || `<tr><td colspan="11" style="text-align:center; color:#999; padding:30px;">沒有符合篩選條件的商品</td></tr>`;
       recalculate();
     }
 
@@ -1238,12 +1332,15 @@ HTML_TEMPLATE = r"""
       products[idx].spec = document.getElementById(`spec-${idx}`).value;
       const noteEl = document.getElementById(`note-${idx}`);
       products[idx].note = noteEl ? noteEl.value : "";
+      products[idx].qty = parseInt(document.getElementById(`qty-${idx}`).value) || 1;
+
       if (isAdmin) {
         products[idx].buyer = document.getElementById(`buyer-${idx}`).value.trim() || "訪客";
+        products[idx].currency = document.getElementById(`curr-${idx}`).value;
+        products[idx].price = parseFloat(document.getElementById(`price-${idx}`).value) || 0;
+        const stEl = document.getElementById(`status-${idx}`);
+        if (stEl) products[idx].status = stEl.value;
       }
-      products[idx].currency = document.getElementById(`curr-${idx}`).value;
-      products[idx].price = parseFloat(document.getElementById(`price-${idx}`).value) || 0;
-      products[idx].qty = parseInt(document.getElementById(`qty-${idx}`).value) || 1;
       await pushState();
     }
 
@@ -1278,7 +1375,7 @@ HTML_TEMPLATE = r"""
           if (!buyers[buyer]) buyers[buyer] = { qty: 0, goodsTwd: 0, items: [] };
           buyers[buyer].qty += qty;
           buyers[buyer].goodsTwd += unitTwd * qty;
-          buyers[buyer].items.push({ title: p.title, fullSpec: formatFullSpec(p), qty, unitTwd, subTwd: unitTwd * qty });
+          buyers[buyer].items.push({ title: p.title, fullSpec: formatFullSpec(p), status: p.status || "", qty, unitTwd, subTwd: unitTwd * qty });
         }
       });
 
@@ -1299,7 +1396,6 @@ HTML_TEMPLATE = r"""
       document.getElementById("selectedCount").innerText = totalQty;
       document.getElementById("totalTwd").innerText = `NT$${totalTwd.toLocaleString()}`;
 
-      // 免運進度條
       const fsCard = document.getElementById("freeShipCard");
       if (freeShipThreshold > 0) {
         fsCard.style.display = "block";
@@ -1319,7 +1415,6 @@ HTML_TEMPLATE = r"""
         fsCard.style.display = "none";
       }
 
-      // 分帳膠囊（支援篩選 + 付款標記）
       const splitCard = document.getElementById("splitCard");
       const splitBox = document.getElementById("splitBox");
       const buyerEntries = Object.entries(buyers);
@@ -1597,13 +1692,26 @@ def api_state():
         new_ship_mode = data.get("shippingMode", "qty")
         new_free_ship = float(data.get("freeShipThreshold", 0))
         new_bank = str(data.get("bankInfo", "")).strip()
+        new_ann = str(data.get("announcement", "")).strip()
+        new_deadline = str(data.get("deadline", "")).strip()
         new_paid = data.get("paidBuyers", current.get("paidBuyers", {}))
         new_locked = bool(data.get("locked", current.get("locked", False)))
         new_allowed = data.get("allowedEditors", allowed_list)
         new_rpw = str(data.get("roomPassword", room_pw)).strip()
     else:
-        other_items = [p for p in (current.get("products") or []) if (p.get("buyer") or "訪客") != user_name]
-        my_items = [p for p in incoming_products if (p.get("buyer") or "訪客") == user_name]
+        existing_prods = current.get("products") or []
+        existing_by_id = {p.get("id"): p for p in existing_prods if p.get("id")}
+        other_items = [p for p in existing_prods if (p.get("buyer") or "訪客") != user_name]
+        my_items = []
+        for p in incoming_products:
+            if (p.get("buyer") or "訪客") == user_name:
+                # 防止非團主竄改既有商品的價格、幣別、採購狀態
+                old = existing_by_id.get(p.get("id"))
+                if old:
+                    p["price"] = old.get("price", 0)
+                    p["currency"] = old.get("currency", "TWD")
+                    p["status"] = old.get("status", "⏳ 待下單")
+                my_items.append(p)
         merged_products = other_items + my_items
         new_rates = current.get("rates", {})
         new_fee = bool(current.get("feeChecked", False))
@@ -1611,6 +1719,8 @@ def api_state():
         new_ship_mode = current.get("shippingMode", "qty")
         new_free_ship = float(current.get("freeShipThreshold", 0))
         new_bank = current.get("bankInfo", "")
+        new_ann = current.get("announcement", "")
+        new_deadline = current.get("deadline", "")
         new_paid = current.get("paidBuyers", {})
         new_locked = bool(current.get("locked", False))
         new_allowed = allowed_list
@@ -1624,6 +1734,8 @@ def api_state():
         "shippingMode": new_ship_mode,
         "freeShipThreshold": new_free_ship,
         "bankInfo": new_bank,
+        "announcement": new_ann,
+        "deadline": new_deadline,
         "paidBuyers": new_paid,
         "locked": new_locked,
         "allowedEditors": new_allowed,
@@ -1831,7 +1943,7 @@ def scrape_product(url):
 
         return {"url": url, "title": title, "img": img_url, "price": price_num, "currency": currency, "options": options}
     except Exception as e:
-        return {"url": url, "title": f"抓取受阻，請手動補填 ({type(e).__name__})", "img": "", "price": 0, "currency": currency, "options": []}
+        return {"url": url, "title": f"抓取受阻，請通知團主補價 ({type(e).__name__})", "img": "", "price": 0, "currency": currency, "options": []}
 
 @app.route("/")
 def index():
@@ -1864,7 +1976,7 @@ def api_export():
     ws = wb.active
     ws.title = room_name[:28]
 
-    col_headers = ["商品照", "買家", "商品名稱", "規格 / 顏色備註", "幣別", "原幣單價", "台幣單價", "數量", "運費分攤", "小計 (TWD)", "商品連結"]
+    col_headers = ["商品照", "買家", "採購進度", "商品名稱", "規格 / 顏色備註", "幣別", "原幣單價", "台幣單價", "數量", "運費分攤", "小計 (TWD)", "商品連結"]
     ws.append(col_headers)
 
     header_fill = PatternFill(start_color="5C4742", end_color="5C4742", fill_type="solid")
@@ -1876,7 +1988,7 @@ def api_export():
         cell.alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[1].height = 28
 
-    col_widths = {"A": 15, "B": 10, "C": 32, "D": 20, "E": 7, "F": 11, "G": 11, "H": 7, "I": 10, "J": 12, "K": 30}
+    col_widths = {"A": 15, "B": 10, "C": 12, "D": 30, "E": 20, "F": 7, "G": 11, "H": 11, "I": 7, "J": 10, "K": 12, "L": 30}
     for col, width in col_widths.items():
         ws.column_dimensions[col].width = width
 
@@ -1903,24 +2015,25 @@ def api_export():
 
         spec_text = item.get("fullSpec") or item.get("spec", "")
         ws.cell(row=row_idx, column=2, value=item.get("buyer", "訪客")).alignment = Alignment(horizontal="center", vertical="center")
-        ws.cell(row=row_idx, column=3, value=item.get("title", "")).alignment = Alignment(vertical="center", wrap_text=True)
-        ws.cell(row=row_idx, column=4, value=spec_text).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        ws.cell(row=row_idx, column=5, value=curr).alignment = Alignment(horizontal="center", vertical="center")
+        ws.cell(row=row_idx, column=3, value=item.get("status", "⏳ 待下單")).alignment = Alignment(horizontal="center", vertical="center")
+        ws.cell(row=row_idx, column=4, value=item.get("title", "")).alignment = Alignment(vertical="center", wrap_text=True)
+        ws.cell(row=row_idx, column=5, value=spec_text).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        ws.cell(row=row_idx, column=6, value=curr).alignment = Alignment(horizontal="center", vertical="center")
 
         for col_i, val, fmt in [
-            (6, price, '#,##0.##'),
-            (7, unit_twd, '#,##0'),
-            (9, ship_share, '#,##0'),
-            (10, subtotal_twd, '#,##0')
+            (7, price, '#,##0.##'),
+            (8, unit_twd, '#,##0'),
+            (10, ship_share, '#,##0'),
+            (11, subtotal_twd, '#,##0')
         ]:
             c = ws.cell(row=row_idx, column=col_i, value=val)
             c.number_format = fmt
             c.alignment = Alignment(horizontal="right", vertical="center")
 
-        ws.cell(row=row_idx, column=8, value=qty).alignment = Alignment(horizontal="center", vertical="center")
+        ws.cell(row=row_idx, column=9, value=qty).alignment = Alignment(horizontal="center", vertical="center")
 
         url_val = item.get("url", "")
-        c_url = ws.cell(row=row_idx, column=11, value=url_val)
+        c_url = ws.cell(row=row_idx, column=12, value=url_val)
         if url_val:
             c_url.hyperlink = url_val
             c_url.font = Font(color="0563C1", underline="single")
@@ -1942,17 +2055,17 @@ def api_export():
 
     sum_row = len(items) + 2
     ws.row_dimensions[sum_row].height = 28
-    ws.cell(row=sum_row, column=7, value="總計").font = Font(bold=True)
-    ws.cell(row=sum_row, column=7).alignment = Alignment(horizontal="right", vertical="center")
-    ws.cell(row=sum_row, column=8, value=total_qty).font = Font(bold=True)
-    ws.cell(row=sum_row, column=8).alignment = Alignment(horizontal="center", vertical="center")
+    ws.cell(row=sum_row, column=8, value="總計").font = Font(bold=True)
+    ws.cell(row=sum_row, column=8).alignment = Alignment(horizontal="right", vertical="center")
+    ws.cell(row=sum_row, column=9, value=total_qty).font = Font(bold=True)
+    ws.cell(row=sum_row, column=9).alignment = Alignment(horizontal="center", vertical="center")
 
-    s_ship = ws.cell(row=sum_row, column=9, value=round(shipping))
+    s_ship = ws.cell(row=sum_row, column=10, value=round(shipping))
     s_ship.number_format = '#,##0'
     s_ship.font = Font(bold=True)
     s_ship.alignment = Alignment(horizontal="right", vertical="center")
 
-    s_twd = ws.cell(row=sum_row, column=10, value=grand_total)
+    s_twd = ws.cell(row=sum_row, column=11, value=grand_total)
     s_twd.number_format = '#,##0'
     s_twd.font = Font(bold=True, color="FB6F92")
     s_twd.alignment = Alignment(horizontal="right", vertical="center")
