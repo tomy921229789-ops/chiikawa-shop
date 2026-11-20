@@ -3,8 +3,11 @@ import os
 import re
 import json
 import time
+import hmac
+import hashlib
 import threading
 import webbrowser
+from datetime import datetime, timezone, timedelta
 from urllib.parse import quote
 import requests
 from bs4 import BeautifulSoup
@@ -19,8 +22,11 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 FIREBASE_URL = os.environ.get("FIREBASE_URL", "").strip().rstrip("/")
 ADMIN_PIN = os.environ.get("ADMIN_PIN", "1234").strip()
+SIGN_SECRET = (os.environ.get("SECRET_KEY") or f"{ADMIN_PIN}_chiikawa_sign_v1").encode("utf-8")
 
 LOCAL_ROOMS = {}
+FAILED_ADMIN_LOG = {}  # {ip: {"count": int, "until": float}}
+TW_TZ = timezone(timedelta(hours=8))
 
 def default_room_state():
     return {
@@ -44,6 +50,23 @@ def sanitize_room(room_name):
     name = (room_name or "大廳").strip()
     safe = re.sub(r'[.$#\[\]/]', '_', name)
     return safe[:30] if safe else "大廳"
+
+def sign_price(url, price, currency):
+    msg = f"{url or ''}|{float(price or 0):.4f}|{str(currency or 'TWD').upper()}".encode("utf-8")
+    return hmac.new(SIGN_SECRET, msg, hashlib.sha256).hexdigest()[:16]
+
+def is_deadline_passed(deadline_str):
+    if not deadline_str:
+        return False
+    try:
+        dt = datetime.strptime(deadline_str[:16], "%Y-%m-%dT%H:%M").replace(tzinfo=TW_TZ)
+        return datetime.now(TW_TZ) >= dt
+    except Exception:
+        return False
+
+def get_client_ip():
+    fwd = request.headers.get("X-Forwarded-For", "")
+    return fwd.split(",")[0].strip() if fwd else (request.remote_addr or "unknown")
 
 HTML_TEMPLATE = r"""
 <!DOCTYPE html>
@@ -179,13 +202,7 @@ HTML_TEMPLATE = r"""
       font-size: 13px;
       font-weight: 700;
     }
-    .admin-row {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 8px;
-      margin-top: 9px;
-    }
+    .admin-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 9px; }
     .admin-panel input {
       padding: 5px 10px;
       border: 1px solid #ffd166;
@@ -479,7 +496,7 @@ HTML_TEMPLATE = r"""
   <div id="nameOverlay" class="modal-overlay" style="z-index: 990;">
     <div class="modal-box">
       <h2>👋 請先輸入你的名字</h2>
-      <div style="font-size:13px; color:#888;">你新增的商品會自動標記此名字，且只能編輯自己的商品</div>
+      <div style="font-size:13px; color:#888;">系統會自動綁定你的裝置金鑰，防冒名修改你的商品</div>
       <input type="text" id="entryNameInput" placeholder="例如：小明、小美" maxlength="15" onkeydown="if(event.key==='Enter') submitEntryName()">
       <div id="nameError" style="color:#e63946; font-size:12px; font-weight:700; min-height:18px; margin-bottom:8px;"></div>
       <button onclick="submitEntryName()" style="width:100%; padding:10px;">✨ 確認並進入房間</button>
@@ -508,13 +525,11 @@ HTML_TEMPLATE = r"""
       <div class="online-box" id="onlineBox">🟢 目前在線：讀取中...</div>
     </div>
 
-    <!-- 團主置頂公告 & 倒數計時 -->
     <div id="announceBar" class="announce-bar"></div>
     <div id="countdownBar" class="countdown-bar"></div>
 
-    <!-- 團主專屬控制台 -->
     <div id="adminPanel" class="admin-panel">
-      <div style="color:#ffd166; font-size:14px;">👑 團主控制台（僅團主可見，重整與換房會自動保持登入）</div>
+      <div style="color:#ffd166; font-size:14px;">👑 團主控制台（已啟用防冒名、防竄改價格與後端結單保護）</div>
       <div class="admin-row">
         <button id="lockToggleBtn" onclick="toggleLock()"></button>
         <span>｜ 授權名單：</span>
@@ -557,7 +572,7 @@ HTML_TEMPLATE = r"""
     </div>
 
     <div class="card">
-      <textarea id="urlInput" placeholder="貼上各國商品網址（韓、日、中、台、美、澳皆可，一行一個；價格與幣別已鎖定僅團主可改）..."></textarea>
+      <textarea id="urlInput" placeholder="貼上各國商品網址（韓、日、中、台、美、澳皆可，一行一個；價格與身分均受後端安全保護）..."></textarea>
       <div class="controls">
         <button id="fetchBtn" class="edit-only" onclick="fetchProducts()">✨ 抓取並加入清單</button>
         <button class="btn-add edit-only" onclick="addManualRow()">+ 手動新增</button>
@@ -565,7 +580,7 @@ HTML_TEMPLATE = r"""
         <button id="exportBtn" class="btn-export" onclick="exportExcel()">📊 匯出含圖 Excel</button>
         <button class="btn-rate admin-only" onclick="loadLiveRates()">🔄 更新匯率</button>
         <button class="btn-clear admin-only" onclick="clearAll()">🗑️ 清空</button>
-        <span id="statusText" class="status">準備就緒 ✨</span>
+        <span id="statusText" class="status">🛡️ 安全防護運作中</span>
       </div>
 
       <div class="rates-bar">
@@ -648,6 +663,13 @@ HTML_TEMPLATE = r"""
     const CURRENCIES = ["KRW", "JPY", "CNY", "USD", "AUD", "TWD"];
     const ITEM_STATUSES = ["⏳ 待下單", "🛍️ 已下單", "📦 已到貨", "❌ 斷貨"];
 
+    // 瀏覽器專屬防冒名金鑰（永久存於本機）
+    let userToken = localStorage.getItem("chiikawa_utoken");
+    if (!userToken) {
+      userToken = "tk_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      localStorage.setItem("chiikawa_utoken", userToken);
+    }
+
     let clientId = sessionStorage.getItem("chiikawa_cid");
     if (!clientId) {
       clientId = "u_" + Math.random().toString(36).slice(2, 10);
@@ -671,7 +693,6 @@ HTML_TEMPLATE = r"""
       document.getElementById("roomInput").value = currentRoom;
       document.getElementById("pwRoomName").innerText = currentRoom;
 
-      // 自動恢復團主登入狀態
       const savedPin = sessionStorage.getItem("chiikawa_admin_pin");
       if (savedPin) {
         try {
@@ -790,7 +811,7 @@ HTML_TEMPLATE = r"""
     function canEditRow(p) {
       if (isAdmin) return true;
       if (!canEdit()) return false;
-      return (p.buyer || "訪客") === getMyName();
+      return !!p.isMine;
     }
 
     function setFilterBuyer(name) {
@@ -924,7 +945,7 @@ HTML_TEMPLATE = r"""
         }
         return;
       }
-      const pin = prompt("請輸入團主密碼（預設 1234）：");
+      const pin = prompt("請輸入團主密碼：");
       if (!pin) return;
       try {
         const res = await fetch("/api/verify_admin", {
@@ -944,7 +965,7 @@ HTML_TEMPLATE = r"""
           loadAllRooms();
           document.getElementById("statusText").innerText = "👑 已進入團主模式";
         } else {
-          alert("密碼錯誤！");
+          alert(data.error || "密碼錯誤！");
         }
       } catch {
         alert("驗證失敗，請稍後再試");
@@ -980,6 +1001,7 @@ HTML_TEMPLATE = r"""
         const qs = new URLSearchParams({
           room: currentRoom,
           cid: clientId,
+          utoken: userToken,
           name: getMyName(),
           rpw: getSavedRoomPw(),
           adminPin: adminPin
@@ -1050,6 +1072,7 @@ HTML_TEMPLATE = r"""
       const payload = {
         room: currentRoom,
         userName: getMyName(),
+        utoken: userToken,
         rpw: getSavedRoomPw(),
         products: products,
         rates: getRates(),
@@ -1165,12 +1188,12 @@ HTML_TEMPLATE = r"""
           if (data.items && data.items.length > 0) {
             const it = data.items[0];
             const defaultSpec = (it.options && it.options.length > 0) ? it.options[0].label : "";
-            products.push({ id: makeId(), ...it, spec: defaultSpec, note: "", status: "⏳ 待下單", buyer: myName, qty: 1, checked: true });
+            products.push({ id: makeId(), ...it, spec: defaultSpec, note: "", status: "⏳ 待下單", buyer: myName, isMine: true, qty: 1, checked: true });
             added++;
             await pushState();
           }
         } catch {
-          products.push({ id: makeId(), url: url, title: "抓取逾時或受阻，請通知團主補價", img: "", price: 0, currency: "TWD", options: [], spec: "", note: "", status: "⏳ 待下單", buyer: myName, qty: 1, checked: true });
+          products.push({ id: makeId(), url: url, title: "抓取逾時或受阻，請通知團主補價", img: "", price: 0, currency: "TWD", options: [], spec: "", note: "", status: "⏳ 待下單", buyer: myName, isMine: true, qty: 1, checked: true });
           added++;
           await pushState();
         }
@@ -1185,7 +1208,7 @@ HTML_TEMPLATE = r"""
 
     async function addManualRow() {
       if (!canEdit()) return;
-      products.push({ id: makeId(), url: "", title: "手動新增商品", img: "", price: 0, currency: "TWD", options: [], spec: "", note: "", status: "⏳ 待下單", buyer: getMyName(), qty: 1, checked: true });
+      products.push({ id: makeId(), url: "", title: "手動新增商品（待團主核價）", img: "", price: 0, currency: "TWD", options: [], spec: "", note: "", status: "⏳ 待下單", buyer: getMyName(), isMine: true, qty: 1, checked: true });
       await pushState();
     }
 
@@ -1195,6 +1218,7 @@ HTML_TEMPLATE = r"""
       const copy = JSON.parse(JSON.stringify(src));
       copy.id = makeId();
       copy.buyer = getMyName();
+      copy.isMine = true;
       copy.qty = 1;
       copy.status = "⏳ 待下單";
       copy.checked = true;
@@ -1587,6 +1611,16 @@ def save_room_state(room_id, state):
     except Exception:
         return False
 
+def sanitize_products_for_client(prods, utoken, is_admin):
+    """隱藏 ownerToken 不外洩，只回傳 isMine 給前端判斷編輯權"""
+    safe_list = []
+    for p in (prods or []):
+        cp = dict(p)
+        tok = cp.pop("ownerToken", None)
+        cp["isMine"] = True if is_admin else (bool(utoken) and tok == utoken)
+        safe_list.append(cp)
+    return safe_list
+
 @app.route("/bg.jpg")
 def background_image():
     img_path = os.path.join(BASE_DIR, "123.jpg")
@@ -1596,14 +1630,31 @@ def background_image():
 
 @app.route("/api/verify_admin", methods=["POST"])
 def api_verify_admin():
-    pin = str(request.json.get("pin", "")).strip()
-    return jsonify({"ok": pin == ADMIN_PIN})
+    ip = get_client_ip()
+    now = time.time()
+    rec = FAILED_ADMIN_LOG.get(ip, {"count": 0, "until": 0})
+    if now < rec["until"]:
+        wait_sec = int(rec["until"] - now)
+        return jsonify({"ok": False, "error": f"嘗試次數過多，請 {wait_sec} 秒後再試"}), 429
+
+    pin = str((request.json or {}).get("pin", "")).strip()
+    if hmac.compare_digest(pin, ADMIN_PIN):
+        FAILED_ADMIN_LOG.pop(ip, None)
+        return jsonify({"ok": True})
+
+    time.sleep(2)
+    rec["count"] += 1
+    if rec["count"] >= 5:
+        rec["until"] = time.time() + 300
+        rec["count"] = 0
+    FAILED_ADMIN_LOG[ip] = rec
+    return jsonify({"ok": False, "error": "團主密碼錯誤！"})
 
 @app.route("/api/rooms", methods=["GET", "DELETE"])
 def api_rooms():
     if request.method == "GET":
         req_pin = request.args.get("adminPin", "").strip()
-        if req_pin != ADMIN_PIN:
+        if not hmac.compare_digest(req_pin, ADMIN_PIN):
             return jsonify({"ok": False}), 403
         if not FIREBASE_URL:
             return jsonify({"ok": True, "rooms": list(LOCAL_ROOMS.keys())})
@@ -1616,7 +1667,7 @@ def api_rooms():
             return jsonify({"ok": False, "rooms": []})
 
     data = request.json or {}
-    if str(data.get("adminPin", "")).strip() != ADMIN_PIN:
+    if not hmac.compare_digest(str(data.get("adminPin", "")).strip(), ADMIN_PIN):
         return jsonify({"ok": False}), 403
     room_id = sanitize_room(data.get("room", ""))
     if not room_id:
@@ -1635,16 +1686,17 @@ def api_state():
     if request.method == "GET":
         room_id = sanitize_room(request.args.get("room", "大廳"))
         cid = request.args.get("cid", "").strip()
+        utoken = request.args.get("utoken", "").strip()
         name = (request.args.get("name", "訪客").strip() or "訪客")[:15]
         rpw = request.args.get("rpw", "").strip()
         req_pin = request.args.get("adminPin", "").strip()
-        is_admin = (req_pin == ADMIN_PIN)
+        is_admin = hmac.compare_digest(req_pin, ADMIN_PIN)
 
         bundle = get_room_bundle(room_id)
         st = dict(bundle["state"])
         room_pw = str(st.get("roomPassword", "")).strip()
 
-        if room_pw and not is_admin and rpw != room_pw:
+        if room_pw and not is_admin and not hmac.compare_digest(rpw, room_pw):
             return jsonify({"needPassword": True, "cloud": bool(FIREBASE_URL)})
 
         if cid:
@@ -1657,6 +1709,7 @@ def api_state():
             if isinstance(info, dict) and now - info.get("ts", 0) <= 18:
                 online_names.append(info.get("name", "訪客"))
 
+        st["products"] = sanitize_products_for_client(st.get("products"), utoken, is_admin)
         if not is_admin:
             st.pop("roomPassword", None)
 
@@ -1671,21 +1724,36 @@ def api_state():
     room_id = sanitize_room(data.get("room", "大廳"))
     current = get_room_bundle(room_id)["state"]
     req_pin = str(data.get("adminPin", "")).strip()
-    is_admin = (req_pin == ADMIN_PIN)
-    user_name = (str(data.get("userName", "")).strip() or "訪客")
+    is_admin = hmac.compare_digest(req_pin, ADMIN_PIN)
+    user_name = (str(data.get("userName", "")).strip() or "訪客")[:15]
+    utoken = str(data.get("utoken", "")).strip()
     rpw = str(data.get("rpw", "")).strip()
 
     room_pw = str(current.get("roomPassword", "")).strip()
-    if room_pw and not is_admin and rpw != room_pw:
+    if room_pw and not is_admin and not hmac.compare_digest(rpw, room_pw):
         return jsonify({"ok": False, "error": "入房密碼驗證失敗！"}), 403
 
     allowed_list = current.get("allowedEditors") or []
-    if current.get("locked") and not is_admin and user_name not in allowed_list:
-        return jsonify({"ok": False, "error": "團主已鎖定此房間，你目前沒有編輯權限！"}), 403
+    expired = is_deadline_passed(current.get("deadline", ""))
+    if (current.get("locked") or expired) and not is_admin and user_name not in allowed_list:
+        msg = "結單時間已到，系統已自動鎖定！" if expired else "團主已鎖定此房間，你目前沒有編輯權限！"
+        return jsonify({"ok": False, "error": msg}), 403
 
+    existing_prods = current.get("products") or []
+    existing_by_id = {p.get("id"): p for p in existing_prods if p.get("id")}
     incoming_products = data.get("products", [])
+
     if is_admin:
-        merged_products = incoming_products
+        merged_products = []
+        for p in incoming_products:
+            cp = dict(p)
+            cp.pop("isMine", None)
+            old = existing_by_id.get(cp.get("id"))
+            # 保留原本商品的 ownerToken，避免團主修改時覆蓋掉原買家金鑰
+            cp["ownerToken"] = old.get("ownerToken") if old else utoken
+            cp["sig"] = sign_price(cp.get("url", ""), cp.get("price", 0), cp.get("currency", "TWD"))
+            merged_products.append(cp)
+
         new_rates = data.get("rates", current.get("rates", {}))
         new_fee = bool(data.get("feeChecked", False))
         new_shipping = float(data.get("shipping", 0))
@@ -1699,19 +1767,48 @@ def api_state():
         new_allowed = data.get("allowedEditors", allowed_list)
         new_rpw = str(data.get("roomPassword", room_pw)).strip()
     else:
-        existing_prods = current.get("products") or []
-        existing_by_id = {p.get("id"): p for p in existing_prods if p.get("id")}
-        other_items = [p for p in existing_prods if (p.get("buyer") or "訪客") != user_name]
+        if not utoken:
+            return jsonify({"ok": False, "error": "缺少使用者識別金鑰，請重新整理網頁"}), 400
+
+        # 嚴格依 ownerToken 區分：非本人的商品完全不動
+        other_items = [p for p in existing_prods if p.get("ownerToken") != utoken]
         my_items = []
         for p in incoming_products:
-            if (p.get("buyer") or "訪客") == user_name:
-                # 防止非團主竄改既有商品的價格、幣別、採購狀態
-                old = existing_by_id.get(p.get("id"))
-                if old:
-                    p["price"] = old.get("price", 0)
-                    p["currency"] = old.get("currency", "TWD")
-                    p["status"] = old.get("status", "⏳ 待下單")
-                my_items.append(p)
+            pid = p.get("id")
+            old = existing_by_id.get(pid)
+            if old:
+                # 既有商品：必須屬於自己才能改，且價格/幣別/狀態/買家強制維持原值
+                if old.get("ownerToken") != utoken:
+                    continue
+                cp = dict(old)
+                cp["checked"] = bool(p.get("checked", True))
+                cp["title"] = str(p.get("title", old.get("title", "")))[:120]
+                cp["spec"] = str(p.get("spec", ""))[:80]
+                cp["note"] = str(p.get("note", ""))[:80]
+                cp["img"] = str(p.get("img", old.get("img", "")))[:400]
+                cp["qty"] = max(1, min(99, int(p.get("qty", 1) or 1)))
+                my_items.append(cp)
+            else:
+                # 新商品：必須驗證後端價格簽章，否則價格強制歸零待團主核價
+                cp = dict(p)
+                cp.pop("isMine", None)
+                url_val = str(cp.get("url", ""))
+                price_val = float(cp.get("price", 0) or 0)
+                curr_val = str(cp.get("currency", "TWD")).upper()
+                expected_sig = sign_price(url_val, price_val, curr_val)
+                if not hmac.compare_digest(str(cp.get("sig", "")), expected_sig):
+                    price_val = 0
+                    curr_val = "TWD"
+                    cp["sig"] = sign_price(url_val, 0, "TWD")
+
+                cp["price"] = price_val
+                cp["currency"] = curr_val
+                cp["buyer"] = user_name
+                cp["ownerToken"] = utoken
+                cp["status"] = "⏳ 待下單"
+                cp["qty"] = max(1, min(99, int(cp.get("qty", 1) or 1)))
+                my_items.append(cp)
+
         merged_products = other_items + my_items
         new_rates = current.get("rates", {})
         new_fee = bool(current.get("feeChecked", False))
@@ -1743,7 +1840,11 @@ def api_state():
         "updatedAt": int(time.time() * 1000)
     }
     save_room_state(room_id, new_state)
-    return jsonify({"ok": True, "updatedAt": new_state["updatedAt"], "products": merged_products})
+    return jsonify({
+        "ok": True,
+        "updatedAt": new_state["updatedAt"],
+        "products": sanitize_products_for_client(merged_products, utoken, is_admin)
+    })
 
 @app.route("/api/rates")
 def api_rates():
@@ -1940,10 +2041,12 @@ def scrape_product(url):
                 price_num = extract_first_number(val)
 
         options = parse_options_and_stock(url, res.text, soup)
+        sig = sign_price(url, price_num, currency)
 
-        return {"url": url, "title": title, "img": img_url, "price": price_num, "currency": currency, "options": options}
+        return {"url": url, "title": title, "img": img_url, "price": price_num, "currency": currency, "options": options, "sig": sig}
     except Exception as e:
-        return {"url": url, "title": f"抓取受阻，請通知團主補價 ({type(e).__name__})", "img": "", "price": 0, "currency": currency, "options": []}
+        sig = sign_price(url, 0, currency)
+        return {"url": url, "title": f"抓取受阻，請通知團主補價 ({type(e).__name__})", "img": "", "price": 0, "currency": currency, "options": [], "sig": sig}
 
 @app.route("/")
 def index():
@@ -1951,14 +2054,14 @@ def index():
 
 @app.route("/api/fetch", methods=["POST"])
 def api_fetch():
-    raw_text = request.json.get("text", "")
+    raw_text = (request.json or {}).get("text", "")
     urls = extract_urls(raw_text)
     items = [scrape_product(url) for url in urls]
     return jsonify({"items": items})
 
 @app.route("/api/export", methods=["POST"])
 def api_export():
-    data = request.json
+    data = request.json or {}
     room_name = sanitize_room(data.get("room", "大廳"))
     items = data.get("items", [])
     rates = data.get("rates", {})
